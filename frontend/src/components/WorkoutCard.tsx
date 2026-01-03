@@ -1,0 +1,120 @@
+import { Card, CardContent, Box, Typography, Chip } from '@mui/material'
+import { CheckCircle, DirectionsRun, DirectionsBike, Pool, FitnessCenter } from '@mui/icons-material'
+import { getSportColor, getTSSColor } from '../utils/sportColors'
+
+interface WorkoutCardProps {
+  title: string
+  sport: string
+  duration?: number
+  distance?: number
+  intensity?: string
+  tss?: number
+  isCompleted?: boolean
+  onClick?: () => void
+}
+
+const SportIcon = ({ sport }: { sport: string }) => {
+  const normalizedSport = sport.toLowerCase().replace(/[_\s-]/g, '')
+  
+  if (normalizedSport.includes('run')) return <DirectionsRun />
+  if (normalizedSport.includes('bike') || normalizedSport.includes('cycl')) return <DirectionsBike />
+  if (normalizedSport.includes('swim')) return <Pool />
+  if (normalizedSport.includes('strength') || normalizedSport.includes('gym')) return <FitnessCenter />
+  
+  return <FitnessCenter />
+}
+
+export default function WorkoutCard({
+  title,
+  sport,
+  duration,
+  distance,
+  intensity,
+  tss,
+  isCompleted = false,
+  onClick,
+}: WorkoutCardProps) {
+  const sportColor = getSportColor(sport)
+  const tssColor = tss ? getTSSColor(tss) : null
+
+  return (
+    <Card
+      sx={{
+        border: isCompleted ? '2px solid' : '2px dashed',
+        borderColor: isCompleted ? sportColor.main : sportColor.main,
+        bgcolor: isCompleted ? sportColor.light : 'background.paper',
+        opacity: isCompleted ? 1 : 0.85,
+        cursor: onClick ? 'pointer' : 'default',
+        transition: 'all 0.2s',
+        '&:hover': onClick
+          ? {
+              transform: 'translateY(-2px)',
+              boxShadow: 3,
+            }
+          : {},
+      }}
+      onClick={onClick}
+    >
+      <CardContent sx={{ p: 1.5, '&:last-child': { pb: 1.5 } }}>
+        {/* Header */}
+        <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+          <SportIcon sport={sport} />
+          {isCompleted && <CheckCircle fontSize="small" sx={{ color: sportColor.dark }} />}
+          <Typography
+            variant="body2"
+            fontWeight={isCompleted ? 600 : 500}
+            sx={{ flexGrow: 1, color: isCompleted ? sportColor.dark : 'text.primary' }}
+          >
+            {title}
+          </Typography>
+        </Box>
+
+        {/* Details */}
+        <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 0.5, alignItems: 'center' }}>
+          {duration && (
+            <Typography variant="caption" color="text.secondary">
+              {duration} min
+            </Typography>
+          )}
+          {distance && (
+            <>
+              <Typography variant="caption" color="text.secondary">
+                •
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {distance} km
+              </Typography>
+            </>
+          )}
+          {intensity && (
+            <>
+              <Typography variant="caption" color="text.secondary">
+                •
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                {intensity}
+              </Typography>
+            </>
+          )}
+        </Box>
+
+        {/* TSS Badge */}
+        {tss !== undefined && tss > 0 && tssColor && (
+          <Box sx={{ mt: 1 }}>
+            <Chip
+              label={`TSS ${tss}`}
+              size="small"
+              sx={{
+                bgcolor: tssColor.main,
+                color: 'white',
+                fontWeight: 600,
+                height: 20,
+                fontSize: '0.7rem',
+              }}
+            />
+          </Box>
+        )}
+      </CardContent>
+    </Card>
+  )
+}
