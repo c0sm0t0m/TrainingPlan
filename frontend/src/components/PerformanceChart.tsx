@@ -1,4 +1,4 @@
-import { Card, CardContent, Typography, Box } from '@mui/material'
+import { Card, CardContent, Typography, Box, useTheme, useMediaQuery } from '@mui/material'
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts'
 
 interface PerformanceChartProps {
@@ -11,6 +11,9 @@ interface PerformanceChartProps {
 }
 
 export default function PerformanceChart({ data }: PerformanceChartProps) {
+  const theme = useTheme()
+  const isMobile = useMediaQuery(theme.breakpoints.down('md'))
+  
   // Interpret TSB (Training Stress Balance)
   const currentTSB = data.length > 0 ? data[data.length - 1].tsb : 0
   
@@ -47,43 +50,68 @@ export default function PerformanceChart({ data }: PerformanceChartProps) {
     <>
       <ResponsiveContainer width="100%" height={300}>
         <LineChart data={data} margin={{ top: 5, right: 30, left: 0, bottom: 5 }}>
-          <CartesianGrid strokeDasharray="3 3" />
+          <CartesianGrid strokeDasharray="3 3" stroke={theme.palette.divider} />
           <XAxis
             dataKey="date"
-            tick={{ fontSize: 12 }}
+            stroke={theme.palette.text.secondary}
+            tick={{ fill: theme.palette.text.secondary, fontSize: 12 }}
             tickFormatter={(date) => {
               const d = new Date(date)
-              return `${d.getMonth() + 1}/${d.getDate()}`
+              return `${d.getDate()}.${d.getMonth() + 1}.`
             }}
           />
-          <YAxis tick={{ fontSize: 12 }} />
+          <YAxis 
+            stroke={theme.palette.text.secondary}
+            tick={{ fill: theme.palette.text.secondary, fontSize: 12 }} 
+          />
           <Tooltip
+            contentStyle={{
+              backgroundColor: theme.palette.mode === 'dark' 
+                ? 'rgba(20, 27, 45, 0.95)' 
+                : 'rgba(255, 255, 255, 0.95)',
+              border: 'none',
+              borderRadius: 6,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.15)',
+              padding: '6px 10px',
+              fontSize: '12px',
+            }}
+            labelStyle={{
+              fontSize: '11px',
+              fontWeight: 600,
+              marginBottom: '2px',
+            }}
+            itemStyle={{
+              fontSize: '11px',
+              padding: '2px 0',
+            }}
             labelFormatter={(date) => new Date(date).toLocaleDateString()}
             formatter={(value: number | undefined) => value ? value.toFixed(1) : '0'}
           />
           <Legend />
-          <Line
-            type="monotone"
-            dataKey="ctl"
-            name="Fitness (CTL)"
-            stroke="#2196f3"
-            strokeWidth={2}
-            dot={false}
-          />
+          {/* Render thinner lines first (bottom layer) */}
           <Line
             type="monotone"
             dataKey="atl"
             name="Fatigue (ATL)"
-            stroke="#ff9800"
-            strokeWidth={2}
+            stroke={theme.palette.warning.main}
+            strokeWidth={isMobile ? 1 : 1.5}
             dot={false}
           />
           <Line
             type="monotone"
             dataKey="tsb"
             name="Form (TSB)"
-            stroke="#4caf50"
-            strokeWidth={2}
+            stroke={theme.palette.success.main}
+            strokeWidth={isMobile ? 1 : 1.5}
+            dot={false}
+          />
+          {/* Render CTL last (top layer) so it's always visible */}
+          <Line
+            type="monotone"
+            dataKey="ctl"
+            name="Fitness (CTL)"
+            stroke={theme.palette.primary.main}
+            strokeWidth={isMobile ? 1.5 : 2}
             dot={false}
           />
         </LineChart>

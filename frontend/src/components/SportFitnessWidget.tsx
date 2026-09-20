@@ -117,7 +117,7 @@ export default function SportFitnessWidget({ sport }: SportFitnessWidgetProps) {
         {/* ATL, CTL, TSB metrics - Reordered and condensed */}
         <Grid container spacing={1} sx={{ mb: 2 }}>
           <Grid item xs={4}>
-            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'action.hover', borderRadius: 1 }}>
               <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontSize: '0.65rem' }}>
                 ATL
               </Typography>
@@ -130,7 +130,7 @@ export default function SportFitnessWidget({ sport }: SportFitnessWidgetProps) {
             </Box>
           </Grid>
           <Grid item xs={4}>
-            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'action.hover', borderRadius: 1 }}>
               <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontSize: '0.65rem' }}>
                 CTL
               </Typography>
@@ -143,7 +143,7 @@ export default function SportFitnessWidget({ sport }: SportFitnessWidgetProps) {
             </Box>
           </Grid>
           <Grid item xs={4}>
-            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'grey.50', borderRadius: 1 }}>
+            <Box sx={{ textAlign: 'center', p: 0.5, bgcolor: 'action.hover', borderRadius: 1 }}>
               <Typography variant="caption" color="text.secondary" sx={{ textTransform: 'uppercase', fontSize: '0.65rem' }}>
                 TSB
               </Typography>

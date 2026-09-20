@@ -24,12 +24,21 @@ import {
   MenuItem,
   FormControl,
   InputLabel,
+  useMediaQuery,
+  useTheme,
+  LinearProgress,
+  Menu,
+  IconButton,
+  ListItemIcon,
 } from '@mui/material'
 import {
   Link as LinkIcon,
   LinkOff as LinkOffIcon,
   Sync as SyncIcon,
   CheckCircle as CheckCircleIcon,
+  FitnessCenter as FitnessCenterIcon,
+  MoreVert as MoreVertIcon,
+  DirectionsRun as DirectionsRunIcon,
 } from '@mui/icons-material'
 import apiClient from '../services/api'
 
@@ -40,14 +49,20 @@ interface GarminStatus {
 }
 
 const Settings: React.FC = () => {
+  const theme = useTheme();
+  const isMobile = useMediaQuery('(max-width:1400px)');
+  
+  console.log('Settings - isMobile:', isMobile, 'window.innerWidth:', window.innerWidth);
+  
   const [garminStatus, setGarminStatus] = useState<GarminStatus | null>(null)
   const [loading, setLoading] = useState(true)
   const [syncDays, setSyncDays] = useState(30) // Days to sync
   const [connecting, setConnecting] = useState(false)
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null)
 
   // Set document title
   useEffect(() => {
-    document.title = 'Settings - TrainingPlan';
+    document.title = 'Settings - Kinesis';
   }, []);
   const [syncing, setSyncing] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -57,6 +72,10 @@ const Settings: React.FC = () => {
   const [connectDialogOpen, setConnectDialogOpen] = useState(false)
   const [garminEmail, setGarminEmail] = useState('')
   const [garminPassword, setGarminPassword] = useState('')
+  
+  // Mobile menu state
+  const [mobileMenuAnchor, setMobileMenuAnchor] = useState<null | HTMLElement>(null)
+  const mobileMenuOpen = Boolean(mobileMenuAnchor)
 
   useEffect(() => {
     fetchGarminStatus()
@@ -128,7 +147,10 @@ const Settings: React.FC = () => {
       setSyncing(true)
       setError(null)
       
-      const response = await apiClient.post('/garmin/sync-activities', { days: syncDays })
+      // Use longer timeout for sync (can take 60+ seconds for 2 years of data)
+      const response = await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
+        timeout: 120000, // 2 minutes
+      })
       
       setSuccess(response.data.message)
       await fetchGarminStatus()
@@ -143,6 +165,7 @@ const Settings: React.FC = () => {
     try {
       setSyncing(true)
       setError(null)
+      setMobileMenuAnchor(null) // Close menu
       
       const response = await apiClient.post('/garmin/sync-workouts', {
         days_ahead: 14
@@ -162,6 +185,41 @@ const Settings: React.FC = () => {
     }
   }
 
+  const handleSyncAll = async () => {
+    try {
+      setSyncing(true)
+      setError(null)
+      setMobileMenuAnchor(null) // Close menu
+      
+      // Sync activities first
+      await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
+        timeout: 120000,
+      })
+      
+      // Then sync workouts
+      const response = await apiClient.post('/garmin/sync-workouts', {
+        days_ahead: 14
+      })
+      
+      if (response.data) {
+        const { synced, scheduled, skipped, failed } = response.data
+        setSuccess(
+          `Full Sync Complete: Activities synced, ${synced} workouts synced, ${scheduled} scheduled, ${skipped} skipped, ${failed} failed`
+        )
+        await fetchGarminStatus()
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to sync')
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const handleDisconnectClick = () => {
+    setMobileMenuAnchor(null)
+    handleDisconnectGarmin()
+  }
+
   if (loading && !garminStatus) {
     return (
       <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
@@ -173,8 +231,8 @@ const Settings: React.FC = () => {
   }
 
   return (
-    <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
-      <Typography variant="h4" gutterBottom>
+    <Container maxWidth="lg" sx={{ mt: { xs: 2, sm: 4 }, mb: { xs: 2, sm: 4 }, px: { xs: 2, sm: 3 } }}>
+      <Typography variant="h4" gutterBottom sx={{ fontSize: { xs: '1.75rem', sm: '2.125rem' } }}>
         Settings
       </Typography>
 
@@ -191,17 +249,25 @@ const Settings: React.FC = () => {
       )}
 
       {/* Garmin Connect Integration */}
-      <Paper sx={{ p: 3, mb: 3 }}>
-        <Typography variant="h5" gutterBottom>
+      <Paper sx={{ p: { xs: 2, sm: 3 }, mb: 3 }}>
+        <Typography variant="h5" gutterBottom sx={{ fontSize: { xs: '1.25rem', sm: '1.5rem' } }}>
           Integrations
         </Typography>
         <Divider sx={{ mb: 3 }} />
 
         <Card variant="outlined">
-          <CardContent>
-            <Box display="flex" alignItems="center" justifyContent="space-between" mb={2}>
-              <Box display="flex" alignItems="center" gap={2}>
-                <Typography variant="h6">Garmin Connect</Typography>
+          <CardContent sx={{ p: { xs: 2, sm: 3 } }}>
+            <Box display="flex" alignItems="center" justifyContent="space-between" mb={2} flexWrap="wrap" gap={1}>
+              <Box display="flex" alignItems="center" gap={2} flexWrap="wrap">
+                <Typography 
+                  variant="h6" 
+                  sx={{ 
+                    fontSize: { xs: '0.95rem', sm: '1.25rem' },
+                    wordBreak: 'break-word'
+                  }}
+                >
+                  Garmin Connect
+                </Typography>
                 {garminStatus?.connected ? (
                   <Chip
                     icon={<CheckCircleIcon />}
@@ -215,7 +281,12 @@ const Settings: React.FC = () => {
               </Box>
             </Box>
 
-            <Typography variant="body2" color="text.secondary" paragraph>
+            <Typography 
+              variant="body2" 
+              color="text.secondary" 
+              paragraph
+              sx={{ fontSize: { xs: '0.8rem', sm: '0.875rem' } }}
+            >
               Connect your Garmin account to automatically sync your activities and workouts.
             </Typography>
 
@@ -226,6 +297,11 @@ const Settings: React.FC = () => {
                     <ListItemText
                       primary="Garmin Account"
                       secondary={garminStatus.email}
+                      primaryTypographyProps={{ fontSize: { xs: '0.85rem', sm: '0.875rem' } }}
+                      secondaryTypographyProps={{ 
+                        fontSize: { xs: '0.75rem', sm: '0.8125rem' },
+                        sx: { wordBreak: 'break-word' }
+                      }}
                     />
                   </ListItem>
                   {garminStatus.last_sync && (
@@ -233,6 +309,8 @@ const Settings: React.FC = () => {
                       <ListItemText
                         primary="Last Sync"
                         secondary={new Date(garminStatus.last_sync).toLocaleString()}
+                        primaryTypographyProps={{ fontSize: { xs: '0.85rem', sm: '0.875rem' } }}
+                        secondaryTypographyProps={{ fontSize: { xs: '0.75rem', sm: '0.8125rem' } }}
                       />
                     </ListItem>
                   )}
@@ -242,59 +320,135 @@ const Settings: React.FC = () => {
           </CardContent>
 
           <CardActions sx={{ flexDirection: 'column', alignItems: 'stretch', gap: 2, p: 2 }}>
+            {syncing && (
+              <LinearProgress sx={{ width: '100%', mb: -1 }} />
+            )}
             {garminStatus?.connected ? (
               <>
-                <Box sx={{ display: 'flex', gap: 2, alignItems: 'center', flexWrap: 'wrap' }}>
-                  <FormControl size="small" sx={{ minWidth: 150 }}>
-                    <InputLabel>Sync Period</InputLabel>
-                    <Select
-                      value={syncDays}
-                      label="Sync Period"
-                      onChange={(e) => setSyncDays(Number(e.target.value))}
+                {/* Sync Period Selector */}
+                <FormControl size="small" fullWidth>
+                  <InputLabel>Sync Period</InputLabel>
+                  <Select
+                    value={syncDays}
+                    label="Sync Period"
+                    onChange={(e) => setSyncDays(Number(e.target.value))}
+                  >
+                    <MenuItem value={7}>Last 7 days</MenuItem>
+                    <MenuItem value={14}>Last 14 days</MenuItem>
+                    <MenuItem value={30}>Last 30 days</MenuItem>
+                    <MenuItem value={60}>Last 60 days</MenuItem>
+                    <MenuItem value={90}>Last 90 days</MenuItem>
+                    <MenuItem value={180}>Last 6 months</MenuItem>
+                    <MenuItem value={365}>Last year</MenuItem>
+                    <MenuItem value={730}>Last 2 years</MenuItem>
+                  </Select>
+                </FormControl>
+
+                {/* Mobile Layout: Primary Action + Menu */}
+                {isMobile ? (
+                  <>
+                    <Box sx={{ display: 'flex', gap: 1 }}>
+                      <Button
+                        startIcon={<SyncIcon />}
+                        onClick={handleSyncAll}
+                        disabled={syncing}
+                        variant="contained"
+                        fullWidth
+                        sx={{ 
+                          fontSize: '0.875rem',
+                          py: 1.25,
+                          minHeight: 44
+                        }}
+                      >
+                        {syncing ? 'Syncing...' : 'Sync All'}
+                      </Button>
+                      <IconButton
+                        onClick={(e) => setMobileMenuAnchor(e.currentTarget)}
+                        disabled={syncing}
+                        sx={{ 
+                          border: 1,
+                          borderColor: 'divider',
+                          borderRadius: 1,
+                          minWidth: 44,
+                          minHeight: 44
+                        }}
+                      >
+                        <MoreVertIcon />
+                      </IconButton>
+                    </Box>
+                  </>
+                ) : (
+                  /* Desktop Layout: All buttons visible */
+                  <>
+                    <Box sx={{ display: 'flex', gap: 2 }}>
+                      <Button
+                        startIcon={<DirectionsRunIcon />}
+                        onClick={handleSyncActivities}
+                        disabled={syncing}
+                        variant="outlined"
+                        sx={{ flex: 1 }}
+                      >
+                        {syncing ? 'Syncing...' : 'Sync Activities'}
+                      </Button>
+                      <Button
+                        startIcon={<FitnessCenterIcon />}
+                        onClick={handleSyncWorkouts}
+                        disabled={syncing}
+                        variant="outlined"
+                        color="primary"
+                        sx={{ flex: 1 }}
+                      >
+                        {syncing ? 'Syncing...' : 'Sync Workouts'}
+                      </Button>
+                    </Box>
+                    <Button
+                      startIcon={<LinkOffIcon />}
+                      onClick={handleDisconnectGarmin}
+                      color="error"
+                      variant="outlined"
+                      sx={{ maxWidth: 200 }}
                     >
-                      <MenuItem value={7}>Last 7 days</MenuItem>
-                      <MenuItem value={14}>Last 14 days</MenuItem>
-                      <MenuItem value={30}>Last 30 days</MenuItem>
-                      <MenuItem value={60}>Last 60 days</MenuItem>
-                      <MenuItem value={90}>Last 90 days</MenuItem>
-                      <MenuItem value={180}>Last 6 months</MenuItem>
-                      <MenuItem value={365}>Last year</MenuItem>
-                    </Select>
-                  </FormControl>
-                  <Button
-                    startIcon={<SyncIcon />}
-                    onClick={handleSyncActivities}
-                    disabled={syncing}
-                    variant="outlined"
-                  >
-                    {syncing ? 'Syncing...' : 'Sync Activities'}
-                  </Button>
-                  <Button
-                    startIcon={<SyncIcon />}
-                    onClick={handleSyncWorkouts}
-                    disabled={syncing}
-                    variant="outlined"
-                    color="primary"
-                  >
-                    {syncing ? 'Syncing...' : 'Sync Workouts'}
-                  </Button>
-                </Box>
-                <Button
-                  startIcon={<LinkOffIcon />}
-                  onClick={handleDisconnectGarmin}
-                  color="error"
-                  variant="outlined"
-                  sx={{ alignSelf: 'flex-start' }}
-                  variant="outlined"
+                      Disconnect
+                    </Button>
+                  </>
+                )}
+
+                {/* Mobile Menu */}
+                <Menu
+                  anchorEl={mobileMenuAnchor}
+                  open={mobileMenuOpen}
+                  onClose={() => setMobileMenuAnchor(null)}
+                  anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                  transformOrigin={{ vertical: 'top', horizontal: 'right' }}
                 >
-                  Disconnect
-                </Button>
+                  <MenuItem onClick={handleSyncActivities} disabled={syncing}>
+                    <ListItemIcon>
+                      <DirectionsRunIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText>Sync Activities Only</ListItemText>
+                  </MenuItem>
+                  <MenuItem onClick={handleSyncWorkouts} disabled={syncing}>
+                    <ListItemIcon>
+                      <FitnessCenterIcon fontSize="small" />
+                    </ListItemIcon>
+                    <ListItemText>Sync Workouts Only</ListItemText>
+                  </MenuItem>
+                  <Divider />
+                  <MenuItem onClick={handleDisconnectClick} disabled={syncing}>
+                    <ListItemIcon>
+                      <LinkOffIcon fontSize="small" color="error" />
+                    </ListItemIcon>
+                    <ListItemText sx={{ color: 'error.main' }}>Disconnect</ListItemText>
+                  </MenuItem>
+                </Menu>
               </>
             ) : (
               <Button
                 startIcon={<LinkIcon />}
                 onClick={() => setConnectDialogOpen(true)}
                 variant="contained"
+                fullWidth
+                sx={{ minHeight: 44 }}
               >
                 Connect Garmin
               </Button>

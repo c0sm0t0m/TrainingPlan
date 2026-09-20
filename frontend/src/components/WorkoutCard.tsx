@@ -98,15 +98,15 @@ export default function WorkoutCard({
           )}
         </Box>
 
-        {/* TSS Badge */}
-        {tss !== undefined && tss > 0 && tssColor && (
+        {/* TSS Badge - Always show if provided, even if 0 */}
+        {tss !== undefined && (
           <Box sx={{ mt: 1 }}>
             <Chip
-              label={`TSS ${tss}`}
+              label={tss > 0 ? `TSS ${tss}` : `TSS -`}
               size="small"
               sx={{
-                bgcolor: tssColor.main,
-                color: 'white',
+                bgcolor: tss > 0 && tssColor ? tssColor.main : 'action.disabled',
+                color: tss > 0 && tssColor ? (tssColor.contrastText || '#fff') : 'text.secondary',
                 fontWeight: 600,
                 height: 20,
                 fontSize: '0.7rem',

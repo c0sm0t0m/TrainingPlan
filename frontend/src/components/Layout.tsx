@@ -22,6 +22,7 @@ import {
   ListItem,
   BottomNavigation,
   BottomNavigationAction,
+  Tooltip,
 } from '@mui/material'
 import {
   Dashboard as DashboardIcon,
@@ -34,14 +35,18 @@ import {
   Logout,
   Menu as MenuIcon,
   Home,
+  Brightness4 as DarkModeIcon,
+  Brightness7 as LightModeIcon,
 } from '@mui/icons-material'
 import { useAuthStore } from '../store/authStore'
+import { useThemeMode } from '../App'
 
 const Layout = ({ children }: { children: React.ReactNode }) => {
   const theme = useTheme()
   const navigate = useNavigate()
   const location = useLocation()
   const { user, logout } = useAuthStore()
+  const { darkMode, toggleDarkMode } = useThemeMode()
   const isMobile = useMediaQuery(theme.breakpoints.down('md'))
 
   const [anchorEl, setAnchorEl] = useState<null | HTMLElement>(null)
@@ -107,7 +112,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
               cursor: 'pointer',
               display: 'flex',
               alignItems: 'center',
-              mr: isMobile ? 0 : 4,
+              mr: isMobile ? 'auto' : 4,
             }}
             onClick={() => navigate('/dashboard')}
           >
@@ -122,7 +127,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
               }}
             >
               <span style={{ fontSize: '1.5rem' }}>🏃</span>
-              {!isMobile && 'TrainingPlan'}
+              Kinesis
             </Typography>
           </Box>
 
@@ -160,11 +165,24 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
 
           {/* Right Side Icons */}
           {!isMobile && (
-            <IconButton color="inherit" sx={{ mr: 1 }}>
-              <Badge badgeContent={0} color="error">
-                <Notifications />
-              </Badge>
-            </IconButton>
+            <>
+              {/* Dark Mode Toggle */}
+              <Tooltip title={darkMode ? 'Light Mode' : 'Dark Mode'}>
+                <IconButton 
+                  color="inherit" 
+                  onClick={toggleDarkMode}
+                  sx={{ mr: 1 }}
+                >
+                  {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
+                </IconButton>
+              </Tooltip>
+              
+              <IconButton color="inherit" sx={{ mr: 1 }}>
+                <Badge badgeContent={0} color="error">
+                  <Notifications />
+                </Badge>
+              </IconButton>
+            </>
           )}
 
           {/* User Avatar Menu */}
@@ -250,7 +268,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
       >
         <Box sx={{ p: 2, borderBottom: 1, borderColor: 'divider' }}>
           <Typography variant="h6" fontWeight={700} color="primary.main">
-            🏃 TrainingPlan
+            🏃 Kinesis
           </Typography>
           <Typography variant="caption" color="text.secondary">
             {user?.email}
@@ -286,6 +304,15 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             </ListItem>
           ))}
           <Divider sx={{ my: 1 }} />
+          <ListItem
+            button
+            onClick={toggleDarkMode}
+          >
+            <ListItemIcon>
+              {darkMode ? <LightModeIcon /> : <DarkModeIcon />}
+            </ListItemIcon>
+            <ListItemText primary={darkMode ? 'Light Mode' : 'Dark Mode'} />
+          </ListItem>
           <ListItem
             button
             onClick={() => {

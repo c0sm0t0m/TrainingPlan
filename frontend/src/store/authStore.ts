@@ -36,15 +36,19 @@ export const useAuthStore = create<AuthState>((set, get) => ({
   login: async (email: string, password: string) => {
     set({ isLoading: true, error: null })
     try {
+      console.log('🔐 Auth Store: Starting login for', email)
+      
       // OAuth2 format requires form data
       const formData = new FormData()
       formData.append('username', email) // OAuth2 uses 'username' field
       formData.append('password', password)
       
+      console.log('📤 Auth Store: Sending POST to /auth/login')
       const response = await apiClient.post('/auth/login', formData, {
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
       })
       
+      console.log('✅ Auth Store: Login successful, got access token')
       const { access_token } = response.data
       localStorage.setItem('access_token', access_token)
       set({ token: access_token, isAuthenticated: true })
@@ -52,6 +56,13 @@ export const useAuthStore = create<AuthState>((set, get) => ({
       // Fetch user info
       await get().fetchUser()
     } catch (error: any) {
+      console.error('❌ Auth Store: Login failed', error)
+      console.error('❌ Error details:', {
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        message: error.message
+      })
       set({ error: error.response?.data?.detail || 'Login failed', isLoading: false })
       throw error
     }

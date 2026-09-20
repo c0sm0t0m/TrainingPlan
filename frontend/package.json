@@ -1,5 +1,5 @@
 {
-  "name": "trainingplan-frontend",
+  "name": "kinesis-frontend",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -25,6 +25,7 @@
     "react-dom": "^18.2.0",
     "react-leaflet": "^4.2.1",
     "react-router-dom": "^6.20.1",
+    "react-swipeable": "^7.0.2",
     "recharts": "^3.6.0",
     "zustand": "^4.4.7"
   },

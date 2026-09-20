@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import { useNavigate, Link } from 'react-router-dom'
 import {
   Container,
@@ -8,22 +8,34 @@ import {
   Typography,
   Paper,
   Alert,
-  CircularProgress
+  CircularProgress,
+  Chip
 } from '@mui/material'
 import { useAuthStore } from '../store/authStore'
+import { getApiUrl } from '../services/api'
 
 export default function Login() {
   const navigate = useNavigate()
   const { login, isLoading, error } = useAuthStore()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
+  const [apiUrl, setApiUrl] = useState('')
+
+  useEffect(() => {
+    const url = getApiUrl()
+    setApiUrl(url)
+    console.log('📡 Login page - API URL:', url)
+  }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
+    console.log('🔐 Login attempt - API URL:', apiUrl)
+    console.log('🔐 Login attempt - Email:', email)
     try {
       await login(email, password)
       navigate('/dashboard')
     } catch (err) {
+      console.error('❌ Login failed:', err)
       // Error is handled by store
     }
   }
@@ -45,9 +57,20 @@ export default function Login() {
           <Typography component="h2" variant="h5" align="center" gutterBottom>
             TrainingPlan
           </Typography>
-          <Typography variant="body2" align="center" color="text.secondary" sx={{ mb: 3 }}>
+          <Typography variant="body2" align="center" color="text.secondary" sx={{ mb: 2 }}>
             Sign in to your account
           </Typography>
+          
+          {apiUrl && (
+            <Box sx={{ mb: 2, textAlign: 'center' }}>
+              <Chip 
+                label={`Server: ${apiUrl.replace('/api/v1', '')}`} 
+                size="small" 
+                color="info"
+                variant="outlined"
+              />
+            </Box>
+          )}
 
           {error && (
             <Alert severity="error" sx={{ mb: 2 }}>

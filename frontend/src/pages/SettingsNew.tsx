@@ -25,6 +25,12 @@ import {
   FormControl,
   InputLabel,
   Chip,
+  useMediaQuery,
+  useTheme,
+  Menu,
+  IconButton,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 import {
   Link as LinkIcon,
@@ -38,8 +44,14 @@ import {
   Save as SaveIcon,
   Calculate as CalculateIcon,
   Info as InfoIcon,
+  Science as ExperimentIcon,
+  Settings as SettingsIcon,
+  MoreVert as MoreVertIcon,
+  FitnessCenter as FitnessCenterIcon,
 } from '@mui/icons-material';
 import apiClient from '../services/api';
+import FeatureFlagsPanel from '../components/FeatureFlagsPanel';
+import Breadcrumbs from '../components/Breadcrumbs';
 
 interface GarminStatus {
   connected: boolean;
@@ -88,8 +100,11 @@ function TabPanel(props: TabPanelProps) {
 }
 
 const SettingsNew: React.FC = () => {
+  const theme = useTheme();
+  const isMobile = useMediaQuery('(max-width:900px)');
   const [tabValue, setTabValue] = useState(0);
   const [garminStatus, setGarminStatus] = useState<GarminStatus | null>(null);
+  const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [thresholds, setThresholds] = useState<UserThresholds>({
     ftp: null,
     cycling_threshold_hr: null,
@@ -134,6 +149,7 @@ const SettingsNew: React.FC = () => {
   const [syncDays, setSyncDays] = useState(30);
   const [connecting, setConnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [healthSyncing, setHealthSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   
@@ -141,6 +157,15 @@ const SettingsNew: React.FC = () => {
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
   const [garminEmail, setGarminEmail] = useState('');
   const [garminPassword, setGarminPassword] = useState('');
+  
+  // Sync progress state
+  const [syncProgressOpen, setSyncProgressOpen] = useState(false);
+  const [syncElapsedTime, setSyncElapsedTime] = useState(0);
+  const [syncActivityCount, setSyncActivityCount] = useState(0);
+  const [initialActivityCount, setInitialActivityCount] = useState(0);
+  const [syncStartDate, setSyncStartDate] = useState<string>('');
+  const [syncEndDate, setSyncEndDate] = useState<string>('');
+  const [syncProgress, setSyncProgress] = useState(0);
 
   // Helper to convert pace (min:sec/km) to seconds
   const paceToSeconds = (minPerKm: string): number | null => {
@@ -169,7 +194,7 @@ const SettingsNew: React.FC = () => {
   };
 
   useEffect(() => {
-    document.title = 'Settings - TrainingPlan';
+    document.title = 'Settings - Kinesis';
     fetchSettings();
   }, []);
 
@@ -474,19 +499,139 @@ const SettingsNew: React.FC = () => {
     }
   };
 
+  const handleSyncAll = async () => {
+    try {
+      setSyncing(true);
+      setHealthSyncing(true);
+      setError(null);
+      
+      // Sync activities first
+      await handleSyncActivities();
+      
+      // Then sync health data
+      await handleSyncHealthData();
+      
+      setSuccess('Successfully synced all data (activities + health data)!');
+    } catch (err: any) {
+      setError('Failed to sync all data');
+    } finally {
+      setSyncing(false);
+      setHealthSyncing(false);
+    }
+  };
+
   const handleSyncActivities = async () => {
     try {
       setSyncing(true);
       setError(null);
+      setSyncProgressOpen(true);
+      setSyncElapsedTime(0);
+      setSyncProgress(0);
       
-      await apiClient.post('/garmin/sync-activities', { days: syncDays });
+      // Calculate date range
+      const endDate = new Date();
+      const startDate = new Date();
+      startDate.setDate(startDate.getDate() - syncDays);
+      setSyncStartDate(startDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }));
+      setSyncEndDate(endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }));
+      
+      // Get initial activity count
+      try {
+        const statsResponse = await apiClient.get('/garmin/activities/stats');
+        const initialCount = statsResponse.data.total_activities || 0;
+        setInitialActivityCount(initialCount);
+        setSyncActivityCount(initialCount);
+      } catch (e) {
+        setInitialActivityCount(0);
+        setSyncActivityCount(0);
+      }
+      
+      // Start elapsed time counter
+      const startTime = Date.now();
+      const timerInterval = setInterval(() => {
+        setSyncElapsedTime(Math.floor((Date.now() - startTime) / 1000));
+      }, 1000);
+      
+      // Track activities per second for progress estimation
+      let lastActivityCount = initialActivityCount;
+      let lastCheckTime = Date.now();
+      const estimatedActivitiesPerDay = syncDays > 365 ? 1.5 : 2; // Conservative estimate
+      const estimatedTotalActivities = syncDays * estimatedActivitiesPerDay;
+      
+      // Start activity count polling
+      const pollInterval = setInterval(async () => {
+        try {
+          const statsResponse = await apiClient.get('/garmin/activities/stats');
+          const currentCount = statsResponse.data.total_activities || 0;
+          setSyncActivityCount(currentCount);
+          
+          // Estimate progress based on activity growth
+          const newActivities = currentCount - initialActivityCount;
+          if (newActivities > 0) {
+            const progress = Math.min(95, (newActivities / estimatedTotalActivities) * 100);
+            setSyncProgress(progress);
+          } else {
+            // If no activities yet, show minimal progress based on time
+            const timeProgress = Math.min(30, (Date.now() - startTime) / 2000);
+            setSyncProgress(timeProgress);
+          }
+          
+          lastActivityCount = currentCount;
+          lastCheckTime = Date.now();
+        } catch (e) {
+          // Ignore polling errors
+        }
+      }, 3000); // Poll every 3 seconds
+      
+      // Use longer timeout for sync (can take 60+ seconds for 2 years of data)
+      await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
+        timeout: 120000, // 2 minutes
+      });
+      
+      // Clean up intervals
+      clearInterval(timerInterval);
+      clearInterval(pollInterval);
+      
+      // Final activity count and 100% progress
+      const finalStatsResponse = await apiClient.get('/garmin/activities/stats');
+      setSyncActivityCount(finalStatsResponse.data.total_activities || 0);
+      setSyncProgress(100);
       
       setSuccess(`Successfully synced activities from last ${syncDays} days!`);
       await fetchSettings();
+      
+      // Close progress dialog after a short delay to show final count
+      setTimeout(() => {
+        setSyncProgressOpen(false);
+      }, 2000);
     } catch (err: any) {
+      setSyncProgressOpen(false);
       setError(err.response?.data?.detail || 'Failed to sync activities');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleSyncHealthData = async () => {
+    try {
+      setHealthSyncing(true);
+      setError(null);
+      
+      // Calculate timeout based on sync days
+      // ~100ms per day, minimum 60 seconds, maximum 5 minutes
+      const timeoutMs = Math.min(300000, Math.max(60000, syncDays * 100));
+      
+      const response = await apiClient.post('/garmin/sync-health-data', { days: syncDays }, {
+        timeout: timeoutMs,
+      });
+      
+      const { hrv_new, hrv_updated, total_records } = response.data;
+      setSuccess(`Successfully synced health data: ${hrv_new} new HRV records, ${hrv_updated} updated!`);
+      await fetchSettings();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to sync health data');
+    } finally {
+      setHealthSyncing(false);
     }
   };
 
@@ -500,6 +645,13 @@ const SettingsNew: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+      <Breadcrumbs
+        items={[
+          { label: 'Home', path: '/dashboard' },
+          { label: 'Settings', icon: <SettingsIcon fontSize="small" /> },
+        ]}
+      />
+      
       <Typography variant="h4" gutterBottom>
         Settings
       </Typography>
@@ -520,6 +672,7 @@ const SettingsNew: React.FC = () => {
         <Tabs value={tabValue} onChange={(_, newValue) => setTabValue(newValue)} sx={{ borderBottom: 1, borderColor: 'divider' }}>
           <Tab icon={<HeartIcon />} label="Training Zones" iconPosition="start" />
           <Tab icon={<LinkIcon />} label="Integrations" iconPosition="start" />
+          <Tab icon={<ExperimentIcon />} label="Beta Features" iconPosition="start" />
         </Tabs>
 
         {/* Training Zones Tab */}
@@ -623,16 +776,18 @@ const SettingsNew: React.FC = () => {
                     </FormControl>
                   </Grid>
                   <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: { xs: 'stretch', sm: 'center' } }}>
                       <Button
                         variant="contained"
                         startIcon={calculatingPowerZones ? <CircularProgress size={16} color="inherit" /> : <CalculateIcon />}
                         onClick={() => calculateCyclingPowerZones(thresholds.ftp, powerMethod, true)}
                         disabled={!thresholds.ftp || calculatingPowerZones}
+                        fullWidth
+                        sx={{ maxWidth: { sm: 'auto' } }}
                       >
                         Recalculate Zones
                       </Button>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" color="text.secondary" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
                         Calculate zones using your current FTP value
                       </Typography>
                     </Box>
@@ -709,16 +864,18 @@ const SettingsNew: React.FC = () => {
                     </FormControl>
                   </Grid>
                   <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: { xs: 'stretch', sm: 'center' } }}>
                       <Button
                         variant="contained"
                         startIcon={calculatingRunPaceZones ? <CircularProgress size={16} color="inherit" /> : <CalculateIcon />}
                         onClick={() => calculateRunningPaceZones(thresholds.threshold_pace, runPaceMethod, true)}
                         disabled={!thresholds.threshold_pace || calculatingRunPaceZones}
+                        fullWidth
+                        sx={{ maxWidth: { sm: 'auto' } }}
                       >
                         Recalculate Pace Zones
                       </Button>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" color="text.secondary" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
                         Calculate zones using your current threshold pace
                       </Typography>
                     </Box>
@@ -748,16 +905,18 @@ const SettingsNew: React.FC = () => {
                     </FormControl>
                   </Grid>
                   <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: { xs: 'stretch', sm: 'center' } }}>
                       <Button
                         variant="contained"
                         startIcon={calculatingRunHRZones ? <CircularProgress size={16} color="inherit" /> : <CalculateIcon />}
                         onClick={() => calculateRunningHRZones(thresholds.running_threshold_hr, thresholds.max_hr, runningHRMethod, true)}
                         disabled={!thresholds.running_threshold_hr || !thresholds.max_hr || calculatingRunHRZones}
+                        fullWidth
+                        sx={{ maxWidth: { sm: 'auto' } }}
                       >
                         Recalculate HR Zones
                       </Button>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" color="text.secondary" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
                         Calculate zones using your current threshold and max HR
                       </Typography>
                     </Box>
@@ -832,16 +991,18 @@ const SettingsNew: React.FC = () => {
                     </FormControl>
                   </Grid>
                   <Grid item xs={12}>
-                    <Box sx={{ display: 'flex', gap: 1, alignItems: 'center' }}>
+                    <Box sx={{ display: 'flex', flexDirection: { xs: 'column', sm: 'row' }, gap: 1, alignItems: { xs: 'stretch', sm: 'center' } }}>
                       <Button
                         variant="contained"
                         startIcon={calculatingSwimPaceZones ? <CircularProgress size={16} color="inherit" /> : <CalculateIcon />}
                         onClick={() => calculateSwimPaceZones(thresholds.swim_threshold_pace, swimPaceMethod, true)}
                         disabled={!thresholds.swim_threshold_pace || calculatingSwimPaceZones}
+                        fullWidth
+                        sx={{ maxWidth: { sm: 'auto' } }}
                       >
                         Recalculate Pace Zones
                       </Button>
-                      <Typography variant="caption" color="text.secondary">
+                      <Typography variant="caption" color="text.secondary" sx={{ alignSelf: { xs: 'flex-start', sm: 'center' } }}>
                         Calculate zones using your current threshold pace
                       </Typography>
                     </Box>
@@ -941,43 +1102,144 @@ const SettingsNew: React.FC = () => {
                           <MenuItem value={90}>Last 90 days</MenuItem>
                           <MenuItem value={180}>Last 6 months</MenuItem>
                           <MenuItem value={365}>Last year</MenuItem>
+                          <MenuItem value={730}>Last 2 years</MenuItem>
                         </Select>
                       </FormControl>
+                      {syncDays >= 365 && (
+                        <Alert severity="info" sx={{ mt: 1 }}>
+                          Large sync ({syncDays} days) may take 2-5 minutes. Please be patient!
+                        </Alert>
+                      )}
                     </Box>
                   </>
                 )}
               </CardContent>
 
-              <CardActions sx={{ justifyContent: 'flex-end', px: 2, pb: 2 }}>
+              <CardActions sx={{ flexDirection: 'column', alignItems: 'stretch', gap: 1.5, px: 2, pb: 2 }}>
                 {garminStatus?.connected ? (
-                  <>
-                    <Button
-                      startIcon={syncing ? <CircularProgress size={20} /> : <SyncIcon />}
-                      onClick={handleSyncActivities}
-                      disabled={syncing}
-                    >
-                      Sync Activities
-                    </Button>
-                    <Button
-                      variant="outlined"
-                      startIcon={<LinkOffIcon />}
-                      onClick={handleDisconnectGarmin}
-                      disabled={connecting}
-                    >
-                      Disconnect
-                    </Button>
-                  </>
+                  isMobile ? (
+                    /* Mobile: Sync All + Menu */
+                    <>
+                      <Box sx={{ display: 'flex', gap: 1 }}>
+                        <Button
+                          variant="contained"
+                          startIcon={syncing || healthSyncing ? <CircularProgress size={20} /> : <SyncIcon />}
+                          onClick={handleSyncAll}
+                          disabled={syncing || healthSyncing}
+                          fullWidth
+                          sx={{ minHeight: 44 }}
+                        >
+                          Sync All
+                        </Button>
+                        <IconButton
+                          onClick={(e) => setMenuAnchor(e.currentTarget)}
+                          disabled={syncing || healthSyncing}
+                          sx={{ 
+                            border: 1,
+                            borderColor: 'divider',
+                            borderRadius: 1,
+                            minWidth: 44,
+                            minHeight: 44
+                          }}
+                        >
+                          <MoreVertIcon />
+                        </IconButton>
+                      </Box>
+                      <Menu
+                        anchorEl={menuAnchor}
+                        open={Boolean(menuAnchor)}
+                        onClose={() => setMenuAnchor(null)}
+                        anchorOrigin={{ vertical: 'bottom', horizontal: 'right' }}
+                        transformOrigin={{ vertical: 'top', horizontal: 'right' }}
+                      >
+                        <MenuItem 
+                          onClick={() => {
+                            setMenuAnchor(null);
+                            handleSyncActivities();
+                          }}
+                          disabled={syncing || healthSyncing}
+                        >
+                          <ListItemIcon>
+                            <SyncIcon fontSize="small" />
+                          </ListItemIcon>
+                          <ListItemText>Sync Activities</ListItemText>
+                        </MenuItem>
+                        <MenuItem 
+                          onClick={() => {
+                            setMenuAnchor(null);
+                            handleSyncHealthData();
+                          }}
+                          disabled={syncing || healthSyncing}
+                        >
+                          <ListItemIcon>
+                            <HeartIcon fontSize="small" />
+                          </ListItemIcon>
+                          <ListItemText>Sync Health Data</ListItemText>
+                        </MenuItem>
+                        <Divider />
+                        <MenuItem 
+                          onClick={() => {
+                            setMenuAnchor(null);
+                            handleDisconnectGarmin();
+                          }}
+                          sx={{ color: 'error.main' }}
+                        >
+                          <ListItemIcon>
+                            <LinkOffIcon fontSize="small" color="error" />
+                          </ListItemIcon>
+                          <ListItemText>Disconnect</ListItemText>
+                        </MenuItem>
+                      </Menu>
+                    </>
+                  ) : (
+                    /* Desktop: All buttons visible */
+                    <>
+                      <Button
+                        variant="contained"
+                        startIcon={syncing ? <CircularProgress size={20} /> : <SyncIcon />}
+                        onClick={handleSyncActivities}
+                        disabled={syncing || healthSyncing}
+                      >
+                        Sync Activities
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        startIcon={healthSyncing ? <CircularProgress size={20} /> : <HeartIcon />}
+                        onClick={handleSyncHealthData}
+                        disabled={syncing || healthSyncing}
+                      >
+                        {healthSyncing ? 'Syncing...' : 'Sync Health Data'}
+                      </Button>
+                      <Button
+                        variant="outlined"
+                        startIcon={<LinkOffIcon />}
+                        onClick={handleDisconnectGarmin}
+                        disabled={connecting || syncing || healthSyncing}
+                      >
+                        Disconnect
+                      </Button>
+                    </>
+                  )
                 ) : (
                   <Button
                     variant="contained"
                     startIcon={<LinkIcon />}
                     onClick={() => setConnectDialogOpen(true)}
+                    fullWidth
+                    sx={{ minHeight: 44 }}
                   >
                     Connect Garmin
                   </Button>
                 )}
               </CardActions>
             </Card>
+          </Container>
+        </TabPanel>
+        
+        {/* Beta Features Tab */}
+        <TabPanel value={tabValue} index={2}>
+          <Container maxWidth="md">
+            <FeatureFlagsPanel />
           </Container>
         </TabPanel>
       </Paper>
@@ -1018,6 +1280,68 @@ const SettingsNew: React.FC = () => {
             {connecting ? <CircularProgress size={24} /> : 'Connect'}
           </Button>
         </DialogActions>
+      </Dialog>
+      
+      {/* Sync Progress Dialog */}
+      <Dialog open={syncProgressOpen} maxWidth="sm" fullWidth>
+        <DialogTitle>
+          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+            <SyncIcon sx={{ animation: 'spin 2s linear infinite', '@keyframes spin': { '0%': { transform: 'rotate(0deg)' }, '100%': { transform: 'rotate(360deg)' } } }} />
+            Syncing Activities
+          </Box>
+        </DialogTitle>
+        <DialogContent>
+          <Box sx={{ display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, py: 2 }}>
+            <CircularProgress size={60} variant={syncProgress > 0 ? "determinate" : "indeterminate"} value={syncProgress} />
+            
+            <Box sx={{ textAlign: 'center', width: '100%' }}>
+              <Typography variant="h6" gutterBottom>
+                Fetching activities from Garmin Connect...
+              </Typography>
+              
+              <Typography variant="body2" color="primary.main" gutterBottom sx={{ fontWeight: 500 }}>
+                {syncStartDate} → {syncEndDate}
+              </Typography>
+              
+              <Typography variant="body2" color="text.secondary" gutterBottom>
+                This may take a minute or two for large date ranges
+              </Typography>
+              
+              <Divider sx={{ my: 2 }} />
+              
+              <Box sx={{ display: 'flex', justifyContent: 'space-around', mt: 2 }}>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Elapsed Time
+                  </Typography>
+                  <Typography variant="h6">
+                    {Math.floor(syncElapsedTime / 60)}:{String(syncElapsedTime % 60).padStart(2, '0')}
+                  </Typography>
+                </Box>
+                
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    New Activities
+                  </Typography>
+                  <Typography variant="h6" color="primary.main">
+                    {syncActivityCount > initialActivityCount 
+                      ? `+${syncActivityCount - initialActivityCount}` 
+                      : '0'}
+                  </Typography>
+                </Box>
+                
+                <Box>
+                  <Typography variant="caption" color="text.secondary">
+                    Progress
+                  </Typography>
+                  <Typography variant="h6" color="success.main">
+                    {Math.round(syncProgress)}%
+                  </Typography>
+                </Box>
+              </Box>
+            </Box>
+          </Box>
+        </DialogContent>
       </Dialog>
     </Container>
   );

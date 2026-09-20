@@ -11,7 +11,6 @@ import {
   DialogActions,
   TextField,
   Typography,
-  Grid,
   Chip,
   MenuItem,
   Select,
@@ -29,15 +28,16 @@ import {
 } from '@mui/material';
 import {
   Add as AddIcon,
-  Edit as EditIcon,
   Delete as DeleteIcon,
   ArrowBack as ArrowBackIcon,
   CheckCircle as CheckCircleIcon,
   Upload as UploadIcon,
+  FitnessCenter as FitnessCenterIcon,
 } from '@mui/icons-material';
 import { useNavigate, useParams } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import api from '../services/api';
+import Breadcrumbs from '../components/Breadcrumbs';
 
 interface TrainingPlan {
   id: number;
@@ -121,7 +121,7 @@ const PlanDetail: React.FC = () => {
 
   useEffect(() => {
     if (plan) {
-      document.title = `${plan.name} - TrainingPlan`;
+      document.title = `${plan.name} - Kinesis`;
     }
   }, [plan]);
 
@@ -242,6 +242,14 @@ const PlanDetail: React.FC = () => {
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
+      <Breadcrumbs
+        items={[
+          { label: 'Home', path: '/dashboard' },
+          { label: 'Training Plans', path: '/plans' },
+          { label: plan.name, icon: <FitnessCenterIcon fontSize="small" /> },
+        ]}
+      />
+      
       <Box sx={{ mb: 3 }}>
         <Button startIcon={<ArrowBackIcon />} onClick={() => navigate('/plans')}>
           Back to Plans
