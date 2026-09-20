@@ -11,7 +11,7 @@ import sqlalchemy as sa
 
 # revision identifiers, used by Alembic.
 revision = '20260102_add_power'
-down_revision = '20260101_add_garmin_workout_sync_fields'
+down_revision = '20260101_1230'
 branch_labels = None
 depends_on = None
 

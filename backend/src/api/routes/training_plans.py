@@ -29,15 +29,23 @@ router = APIRouter(prefix="/training-plans", tags=["training-plans"])
 async def list_training_plans(
     skip: int = 0,
     limit: int = 100,
+    active_only: bool = False,
     current_user: User = Depends(get_current_active_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """List all training plans for the current user."""
+    """
+    List all training plans for the current user.
+    
+    Args:
+        active_only: If True, only return plans where is_active = 1
+    """
+    query = select(TrainingPlan).where(TrainingPlan.user_id == current_user.id)
+    
+    if active_only:
+        query = query.where(TrainingPlan.is_active == 1)
+    
     result = await db.execute(
-        select(TrainingPlan)
-        .where(TrainingPlan.user_id == current_user.id)
-        .offset(skip)
-        .limit(limit)
+        query.offset(skip).limit(limit)
     )
     plans = result.scalars().all()
     
@@ -66,6 +74,7 @@ async def list_training_plans(
             "end_date": plan.end_date,
             "sport_type": plan.sport_type,
             "is_active": bool(plan.is_active),
+            "activation_date": plan.activation_date,
             "created_at": plan.created_at,
             "updated_at": plan.updated_at,
             "workout_count": workout_count or 0,
@@ -105,6 +114,7 @@ async def create_training_plan(
         end_date=plan.end_date,
         sport_type=plan.sport_type,
         is_active=bool(plan.is_active),
+        activation_date=plan.activation_date,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workout_count=0,
@@ -148,6 +158,7 @@ async def get_training_plan(
         end_date=plan.end_date,
         sport_type=plan.sport_type,
         is_active=bool(plan.is_active),
+        activation_date=plan.activation_date,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
@@ -162,6 +173,7 @@ async def get_training_plan(
                 duration_minutes=w.duration_minutes,
                 distance_km=w.distance_km,
                 intensity_zone=w.intensity_zone,
+                target_tss=w.target_tss,
                 is_completed=bool(w.is_completed),
                 actual_duration_minutes=w.actual_duration_minutes,
                 actual_distance_km=w.actual_distance_km,
@@ -228,6 +240,7 @@ async def update_training_plan(
         end_date=plan.end_date,
         sport_type=plan.sport_type,
         is_active=bool(plan.is_active),
+        activation_date=plan.activation_date,
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
@@ -242,6 +255,7 @@ async def update_training_plan(
                 duration_minutes=w.duration_minutes,
                 distance_km=w.distance_km,
                 intensity_zone=w.intensity_zone,
+                target_tss=w.target_tss,
                 is_completed=bool(w.is_completed),
                 actual_duration_minutes=w.actual_duration_minutes,
                 actual_distance_km=w.actual_distance_km,
@@ -281,6 +295,174 @@ async def delete_training_plan(
     return None
 
 
+@router.post("/{plan_id}/activate", response_model=TrainingPlanSchema)
+async def activate_training_plan(
+    plan_id: int,
+    activation_date: date = Body(default=None, embed=True),
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Activate a training plan with optional activation date.
+    Deactivates all other plans for the user to ensure only one plan is active at a time.
+    
+    Args:
+        activation_date: Optional date when the plan should be considered as starting.
+                        If not provided, uses today's date.
+    """
+    # Use today if no activation date provided
+    if activation_date is None:
+        activation_date = date.today()
+    
+    # First, verify the plan exists and belongs to the user
+    result = await db.execute(
+        select(TrainingPlan).where(
+            TrainingPlan.id == plan_id,
+            TrainingPlan.user_id == current_user.id
+        )
+    )
+    plan = result.scalar_one_or_none()
+    
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Training plan not found"
+        )
+    
+    # Deactivate all other plans for this user
+    await db.execute(
+        select(TrainingPlan)
+        .where(TrainingPlan.user_id == current_user.id)
+    )
+    all_plans_result = await db.execute(
+        select(TrainingPlan).where(TrainingPlan.user_id == current_user.id)
+    )
+    all_plans = all_plans_result.scalars().all()
+    
+    for p in all_plans:
+        p.is_active = 0
+        if p.id != plan_id:
+            p.activation_date = None
+    
+    # Activate the selected plan
+    plan.is_active = 1
+    plan.activation_date = activation_date
+    
+    await db.commit()
+    await db.refresh(plan)
+    
+    # Fetch workouts
+    workouts_result = await db.execute(
+        select(Workout).where(Workout.training_plan_id == plan_id)
+    )
+    workouts = workouts_result.scalars().all()
+    
+    return TrainingPlanSchema(
+        id=plan.id,
+        user_id=plan.user_id,
+        name=plan.name,
+        description=plan.description,
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+        sport_type=plan.sport_type,
+        is_active=bool(plan.is_active),
+        activation_date=plan.activation_date,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+        workouts=[
+            WorkoutSchema(
+                id=w.id,
+                training_plan_id=w.training_plan_id,
+                date=w.date,
+                sport_type=w.sport_type,
+                workout_type=w.workout_type,
+                title=w.title,
+                description=w.description,
+                duration_minutes=w.duration_minutes,
+                distance_km=w.distance_km,
+                intensity_zone=w.intensity_zone,
+                target_tss=w.target_tss,
+                is_completed=bool(w.is_completed),
+                actual_duration_minutes=w.actual_duration_minutes,
+                actual_distance_km=w.actual_distance_km,
+                notes=w.notes,
+                created_at=w.created_at,
+                updated_at=w.updated_at,
+            )
+            for w in workouts
+        ]
+    )
+
+
+@router.post("/{plan_id}/deactivate", response_model=TrainingPlanSchema)
+async def deactivate_training_plan(
+    plan_id: int,
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Deactivate a training plan."""
+    result = await db.execute(
+        select(TrainingPlan).where(
+            TrainingPlan.id == plan_id,
+            TrainingPlan.user_id == current_user.id
+        )
+    )
+    plan = result.scalar_one_or_none()
+    
+    if not plan:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Training plan not found"
+        )
+    
+    plan.is_active = 0
+    
+    await db.commit()
+    await db.refresh(plan)
+    
+    # Fetch workouts
+    workouts_result = await db.execute(
+        select(Workout).where(Workout.training_plan_id == plan_id)
+    )
+    workouts = workouts_result.scalars().all()
+    
+    return TrainingPlanSchema(
+        id=plan.id,
+        user_id=plan.user_id,
+        name=plan.name,
+        description=plan.description,
+        start_date=plan.start_date,
+        end_date=plan.end_date,
+        sport_type=plan.sport_type,
+        is_active=bool(plan.is_active),
+        activation_date=plan.activation_date,
+        created_at=plan.created_at,
+        updated_at=plan.updated_at,
+        workouts=[
+            WorkoutSchema(
+                id=w.id,
+                training_plan_id=w.training_plan_id,
+                date=w.date,
+                sport_type=w.sport_type,
+                workout_type=w.workout_type,
+                title=w.title,
+                description=w.description,
+                duration_minutes=w.duration_minutes,
+                distance_km=w.distance_km,
+                intensity_zone=w.intensity_zone,
+                target_tss=w.target_tss,
+                is_completed=bool(w.is_completed),
+                actual_duration_minutes=w.actual_duration_minutes,
+                actual_distance_km=w.actual_distance_km,
+                notes=w.notes,
+                created_at=w.created_at,
+                updated_at=w.updated_at,
+            )
+            for w in workouts
+        ]
+    )
+
+
 # Workout endpoints
 @router.post("/{plan_id}/workouts", response_model=WorkoutSchema, status_code=status.HTTP_201_CREATED)
 async def create_workout(
@@ -315,6 +497,7 @@ async def create_workout(
         duration_minutes=workout_data.duration_minutes,
         distance_km=workout_data.distance_km,
         intensity_zone=workout_data.intensity_zone.value if workout_data.intensity_zone else None,
+        target_tss=workout_data.target_tss,
     )
     
     db.add(workout)
@@ -380,6 +563,8 @@ async def update_workout(
         workout.distance_km = workout_data.distance_km
     if workout_data.intensity_zone is not None:
         workout.intensity_zone = workout_data.intensity_zone.value
+    if workout_data.target_tss is not None:
+        workout.target_tss = workout_data.target_tss
     if workout_data.is_completed is not None:
         workout.is_completed = 1 if workout_data.is_completed else 0
     if workout_data.actual_duration_minutes is not None:

@@ -65,6 +65,7 @@ class GarminActivity(Base):
     anaerobic_training_effect = Column(Float)
     training_load = Column(Float)  # Garmin's training load
     calculated_tss = Column(Float)  # Our calculated TSS
+    intensity_factor = Column(Float)  # Intensity Factor (IF) - workout intensity relative to threshold
     vo2_max = Column(Float)
     
     # Location

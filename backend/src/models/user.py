@@ -48,7 +48,9 @@ class User(Base):
     # Relationships
     training_plans = relationship("TrainingPlan", back_populates="user")
     garmin_activities = relationship("GarminActivity", back_populates="user")
+    garmin_hrv_data = relationship("GarminHRV", back_populates="user", cascade="all, delete-orphan")
     weekly_thresholds = relationship("WeeklyThreshold", back_populates="user", cascade="all, delete-orphan")
+    events = relationship("Event", back_populates="user", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<User {self.email}>"

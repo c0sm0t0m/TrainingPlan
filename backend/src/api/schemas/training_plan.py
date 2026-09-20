@@ -51,7 +51,7 @@ class WorkoutBase(BaseModel):
     duration_minutes: Optional[int] = None
     distance_km: Optional[float] = None
     intensity_zone: Optional[IntensityZone] = None
-    tss: Optional[int] = None
+    target_tss: Optional[int] = None
 
 
 class WorkoutCreate(WorkoutBase):
@@ -69,7 +69,7 @@ class WorkoutUpdate(BaseModel):
     duration_minutes: Optional[int] = None
     distance_km: Optional[float] = None
     intensity_zone: Optional[IntensityZone] = None
-    tss: Optional[int] = None
+    target_tss: Optional[int] = None
     is_completed: Optional[bool] = None
     actual_duration_minutes: Optional[int] = None
     actual_distance_km: Optional[float] = None
@@ -114,6 +114,7 @@ class TrainingPlanUpdate(BaseModel):
     end_date: Optional[date] = None
     sport_type: Optional[SportType] = None
     is_active: Optional[bool] = None
+    activation_date: Optional[date] = None
 
 
 class TrainingPlan(TrainingPlanBase):
@@ -121,6 +122,7 @@ class TrainingPlan(TrainingPlanBase):
     id: int
     user_id: int
     is_active: bool
+    activation_date: Optional[date] = None
     created_at: datetime
     updated_at: datetime
     workouts: List[Workout] = []
@@ -139,6 +141,7 @@ class TrainingPlanSummary(BaseModel):
     end_date: date
     sport_type: SportType
     is_active: bool
+    activation_date: Optional[date] = None
     created_at: datetime
     updated_at: datetime
     workout_count: int = 0

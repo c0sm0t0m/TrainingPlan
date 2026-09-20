@@ -53,6 +53,7 @@ class TrainingPlan(Base):
     end_date = Column(Date, nullable=False)
     sport_type = Column(String, nullable=False, default=SportType.RUNNING.value)
     is_active = Column(Integer, default=1)  # SQLite doesn't have native boolean
+    activation_date = Column(Date, nullable=True)  # Date when plan was activated
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -77,7 +78,7 @@ class Workout(Base):
     duration_minutes = Column(Integer, nullable=True)  # Planned duration in minutes
     distance_km = Column(Integer, nullable=True)  # Planned distance in km (stored as integer for simplicity)
     intensity_zone = Column(String, nullable=True)
-    tss = Column(Integer, nullable=True)  # Training Stress Score (planned)
+    target_tss = Column(Integer, nullable=True)  # Target Training Stress Score (planned)
     
     # Completion tracking
     is_completed = Column(Integer, default=0)  # SQLite boolean
@@ -89,6 +90,9 @@ class Workout(Base):
     garmin_workout_id = Column(String, nullable=True)  # Garmin's workout ID
     garmin_synced_at = Column(DateTime, nullable=True)  # Last sync timestamp
     garmin_sync_status = Column(String, default="not_synced")  # not_synced, synced, failed, modified
+    
+    # AI-generated structured workout (JSON format)
+    structured_workout_json = Column(Text, nullable=True)  # JSON array of workout steps
     
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

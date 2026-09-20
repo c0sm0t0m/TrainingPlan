@@ -1,5 +1,5 @@
 """
-TrainingPlan Backend Configuration
+Kinesis Backend Configuration
 """
 from typing import List
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -16,7 +16,7 @@ class Settings(BaseSettings):
     )
     
     # Application
-    app_name: str = "TrainingPlan"
+    app_name: str = "Kinesis"
     app_version: str = "0.1.0"
     environment: str = "development"
     debug: bool = True
@@ -49,11 +49,12 @@ class Settings(BaseSettings):
     
     # CORS
     cors_origins: str = "http://localhost:3000,http://localhost:5173"
+    cors_allow_origin_regex: str = r"^https?://(localhost|127\.0\.0\.1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$"
     
     @property
     def cors_origins_list(self) -> List[str]:
         """Parse CORS origins from comma-separated string."""
-        return [origin.strip() for origin in self.cors_origins.split(",")]
+        return [origin.strip() for origin in self.cors_origins.split(",") if origin.strip()]
     
     # File Upload
     upload_dir: str = "/app/uploads"

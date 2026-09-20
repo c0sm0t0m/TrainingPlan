@@ -336,21 +336,46 @@ async def sync_garmin_activities(
                 user_settings = {
                     "ftp": current_user.ftp,
                     "threshold_pace": current_user.threshold_pace,
+                    "swim_threshold_pace": current_user.swim_threshold_pace,
                     "threshold_hr": threshold_hr,
                     "max_hr": current_user.max_hr,
                     "resting_hr": current_user.resting_hr,
                 }
                 
-                # Calculate TSS from summary data first (fallback)
-                calculated_tss = calculate_tss_from_activity(activity, user_settings)
+                # Calculate TSS and IF from summary data first (fallback)
+                calculated_tss, intensity_factor = calculate_tss_from_activity(activity, user_settings)
                 
                 # Check if time series data already exists (cached from previous sync)
                 existing_time_series = None
+                existing_splits = None
                 if existing_activity and existing_activity.raw_data:
                     existing_time_series = existing_activity.raw_data.get("time_series")
-                    # Preserve cached time series in activity_data
+                    existing_splits = existing_activity.raw_data.get("splits")
+                    # Preserve cached data in activity_data
                     if existing_time_series:
                         activity_data["raw_data"]["time_series"] = existing_time_series
+                    if existing_splits:
+                        activity_data["raw_data"]["splits"] = existing_splits
+                
+                # Fetch lap/split data from Garmin API (only if not cached)
+                if not existing_splits:
+                    try:
+                        # Resume Garmin API session
+                        api = await garmin_service.resume_session(
+                            current_user.garmin_oauth1_token,
+                            current_user.garmin_oauth2_token
+                        )
+                        
+                        # Get splits/laps data
+                        splits_data = api.get_activity_splits(garmin_id)
+                        
+                        if isinstance(splits_data, dict) and 'lapDTOs' in splits_data:
+                            # Store only the lap data we need for analytics
+                            activity_data["raw_data"]["splits"] = splits_data['lapDTOs']
+                            existing_splits = splits_data['lapDTOs']
+                            print(f"  ✓ Fetched {len(splits_data['lapDTOs'])} laps")
+                    except Exception as e:
+                        print(f"  ⚠️  Failed to fetch splits: {str(e)}")
                 
                 # Download and parse FIT file for time series data (only if not cached)
                 # Only do this for activities with GPS/HR data to avoid unnecessary downloads
@@ -396,8 +421,9 @@ async def sync_garmin_activities(
                     except Exception as e:
                         print(f"  ⚠️  TSS calculation failed: {str(e)}")
                 
-                # Store final TSS value
+                # Store final TSS and IF values
                 activity_data["calculated_tss"] = calculated_tss
+                activity_data["intensity_factor"] = intensity_factor
             
                 if existing_activity:
                     # Update existing activity
@@ -721,6 +747,7 @@ async def get_stored_activities(
             "average_hr": activity.average_hr,
             "training_load": activity.training_load,
             "calculated_tss": activity.calculated_tss,
+            "intensity_factor": activity.intensity_factor,
             "location_name": activity.location_name,
             "synced_at": activity.synced_at.isoformat() if activity.synced_at else None,
         }
@@ -801,8 +828,12 @@ async def get_activities_by_date_range(
             "max_hr": activity.max_hr,
             "elevation_gain_meters": activity.elevation_gain_meters,
             "average_speed_mps": activity.average_speed_mps,
+            "average_power_watts": activity.average_power_watts,
+            "normalized_power_watts": activity.normalized_power_watts,
+            "threshold_power_watts": activity.threshold_power_watts,
             "training_load": activity.training_load,
             "calculated_tss": activity.calculated_tss,
+            "intensity_factor": activity.intensity_factor,
             "location_name": activity.location_name,
         }
         for activity in activities
@@ -824,7 +855,8 @@ async def get_activity_stats(
     from sqlalchemy import select, func
     from datetime import datetime, timedelta
     
-    now = datetime.now()
+    # Include today by using tomorrow as end_date
+    now = datetime.now() + timedelta(days=1)
     week_ago = now - timedelta(days=7)
     month_ago = now - timedelta(days=30)
     
@@ -1340,3 +1372,335 @@ async def get_activity_time_series(
         status_code=status.HTTP_404_NOT_FOUND,
         detail="Time series data not available for this activity"
     )
+
+
+@router.get("/hrv")
+async def get_hrv_data(
+    days: int = 30,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get HRV data with calculated metrics (log values, rolling averages, std dev).
+    
+    Based on HRV tracking best practices (matches Excel methodology):
+    - Uses last_night_avg (RMSSD) as daily HRV value
+    - Calculates natural log of daily RMSSD: ln_rmssd = ln(rmssd)
+    - Computes 7-day rolling average (inclusive of current day)
+    - Computes 30-day rolling average and standard deviation
+    - Returns upper/lower bounds as: avg ± (stddev / 2) in log space
+    
+    Args:
+        days: Number of days to retrieve (default 30)
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        HRV data with calculated metrics
+    """
+    from src.models.garmin_hrv import GarminHRV
+    from sqlalchemy import select
+    import math
+    from datetime import date
+    
+    # Calculate date range (include today by setting end_date to tomorrow)
+    end_date = date.today() + timedelta(days=1)
+    start_date = end_date - timedelta(days=days)
+    
+    # CRITICAL: Fetch 30 additional days BEFORE the requested range
+    # This ensures accurate 30-day rolling averages for all days in the range
+    # Example: For 7-day request, we need data from day -30 to day 7 (37 days total)
+    extended_start_date = start_date - timedelta(days=30)
+    
+    # Query HRV data with extended date range for rolling calculations
+    result = await db.execute(
+        select(GarminHRV)
+        .where(
+            GarminHRV.user_id == current_user.id,
+            GarminHRV.calendar_date >= extended_start_date,
+            GarminHRV.calendar_date <= end_date
+        )
+        .order_by(GarminHRV.calendar_date)
+    )
+    hrv_records = result.scalars().all()
+    
+    if not hrv_records:
+        return {
+            "data": [],
+            "stats": {
+                "current_avg": 0,
+                "trend": 0,
+                "trend_direction": "stable",
+                "balanced_days": 0,
+                "balanced_percent": 0,
+                "data_points": 0
+            }
+        }
+    
+    # Process HRV data with calculations
+    hrv_data = []
+    for record in hrv_records:
+        if record.last_night_avg and record.last_night_avg > 0:
+            # Calculate natural log of RMSSD
+            ln_rmssd = math.log(record.last_night_avg)
+            
+            hrv_data.append({
+                "date": record.calendar_date.isoformat(),
+                "rmssd": record.last_night_avg,
+                "ln_rmssd": ln_rmssd,
+                "status": record.status,
+                "baseline_balanced_low": record.baseline_balanced_low,
+                "baseline_balanced_upper": record.baseline_balanced_upper,
+            })
+    
+    # Calculate rolling averages and std dev
+    for i, entry in enumerate(hrv_data):
+        # 7-day average (including current day)
+        start_idx = max(0, i - 6)
+        window_7day = hrv_data[start_idx:i+1]
+        if window_7day:
+            avg_7day = sum(d["ln_rmssd"] for d in window_7day) / len(window_7day)
+            entry["ln_rmssd_7day_avg"] = avg_7day
+            entry["rmssd_7day_avg"] = math.exp(avg_7day)  # Convert back to ms
+        else:
+            entry["ln_rmssd_7day_avg"] = None
+            entry["rmssd_7day_avg"] = None
+        
+        # 30-day average and std dev
+        start_idx_30 = max(0, i - 29)
+        window_30day = hrv_data[start_idx_30:i+1]
+        if window_30day:
+            ln_values = [d["ln_rmssd"] for d in window_30day]
+            avg_30day = sum(ln_values) / len(ln_values)
+            
+            # Calculate standard deviation
+            if len(ln_values) > 1:
+                variance = sum((x - avg_30day) ** 2 for x in ln_values) / len(ln_values)
+                stddev = math.sqrt(variance)
+            else:
+                stddev = 0
+            
+            entry["ln_rmssd_30day_avg"] = avg_30day
+            entry["ln_rmssd_30day_stddev"] = stddev
+            
+            # Upper and lower bounds (in log space)
+            # Excel uses 0.5 × stddev for the bands (avg ± stddev/2)
+            entry["ln_rmssd_30day_upper"] = avg_30day + (stddev / 2)
+            entry["ln_rmssd_30day_lower"] = avg_30day - (stddev / 2)
+            
+            # Convert back to ms for display
+            entry["rmssd_30day_avg"] = math.exp(avg_30day)
+            entry["rmssd_30day_upper"] = math.exp(avg_30day + (stddev / 2))
+            entry["rmssd_30day_lower"] = math.exp(avg_30day - (stddev / 2))
+        else:
+            entry["ln_rmssd_30day_avg"] = None
+            entry["ln_rmssd_30day_stddev"] = None
+            entry["ln_rmssd_30day_upper"] = None
+            entry["ln_rmssd_30day_lower"] = None
+            entry["rmssd_30day_avg"] = None
+            entry["rmssd_30day_upper"] = None
+            entry["rmssd_30day_lower"] = None
+    
+    # Filter to only return the requested date range (not the extended range used for calculations)
+    # This ensures accurate rolling averages while returning only the requested data
+    filtered_hrv_data = [
+        d for d in hrv_data 
+        if start_date <= date.fromisoformat(d["date"]) <= end_date
+    ]
+    
+    # Calculate summary stats using filtered data
+    if filtered_hrv_data:
+        # Current 7-day average (most recent value)
+        current_avg = filtered_hrv_data[-1].get("rmssd_7day_avg", 0) or 0
+        
+        # Trend: compare last 7 days vs previous 7 days (within filtered range)
+        if len(filtered_hrv_data) >= 14:
+            recent_avg = sum(d.get("rmssd_7day_avg", 0) or 0 for d in filtered_hrv_data[-7:]) / 7
+            previous_avg = sum(d.get("rmssd_7day_avg", 0) or 0 for d in filtered_hrv_data[-14:-7]) / 7
+            if previous_avg > 0:
+                trend_percent = ((recent_avg - previous_avg) / previous_avg) * 100
+                trend_direction = "up" if trend_percent > 2 else ("down" if trend_percent < -2 else "stable")
+            else:
+                trend_percent = 0
+                trend_direction = "stable"
+        else:
+            trend_percent = 0
+            trend_direction = "stable"
+        
+        # Balanced days count (within filtered range)
+        balanced_days = sum(1 for d in filtered_hrv_data if d.get("status", "").lower() == "balanced")
+        balanced_percent = round((balanced_days / len(filtered_hrv_data)) * 100) if filtered_hrv_data else 0
+        
+        stats = {
+            "current_avg": current_avg,
+            "trend": trend_percent,
+            "trend_direction": trend_direction,
+            "balanced_days": balanced_days,
+            "balanced_percent": balanced_percent,
+            "data_points": len(filtered_hrv_data)
+        }
+    else:
+        stats = {
+            "current_avg": 0,
+            "trend": 0,
+            "trend_direction": "stable",
+            "balanced_days": 0,
+            "balanced_percent": 0,
+            "data_points": 0
+        }
+    
+    return {
+        "data": filtered_hrv_data,
+        "stats": stats
+    }
+
+
+@router.post("/sync-health-data")
+async def sync_health_data(
+    days: int = Body(30, embed=True),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Sync health/wellness data from Garmin Connect (HRV, sleep, recovery metrics).
+    
+    This syncs daily health metrics separately from workout activities:
+    - HRV (Heart Rate Variability) measurements
+    - Future: Sleep data, resting HR, stress levels
+    
+    Args:
+        days: Number of days to sync (default 30)
+        current_user: Current authenticated user
+        db: Database session
+        
+    Returns:
+        Sync summary with record counts
+    """
+    from src.models.garmin_hrv import GarminHRV
+    from sqlalchemy import select
+    from datetime import date
+    
+    if not current_user.garmin_connected:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Garmin account not connected"
+        )
+    
+    try:
+        # Warn about long sync times for large date ranges
+        if days > 180:
+            print(f"⚠️  WARNING: Syncing {days} days may take 8-12 minutes.", flush=True)
+            print(f"   Frontend timeout may occur. Consider syncing in smaller batches.", flush=True)
+            print(f"   Recommended: Sync 180 days at a time, then increase.", flush=True)
+        
+        # Test connection
+        is_valid = await garmin_service.test_connection(
+            current_user.garmin_oauth1_token,
+            current_user.garmin_oauth2_token
+        )
+        
+        if not is_valid:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Garmin connection expired. Please reconnect."
+            )
+        
+        # Sync HRV data (with progress tracking in service layer)
+        print(f"🏥 Starting health data sync for {days} days...", flush=True)
+        print(f"   Check this terminal for real-time progress updates.", flush=True)
+        
+        hrv_records = await garmin_service.sync_hrv_data(
+            current_user.garmin_oauth1_token,
+            current_user.garmin_oauth2_token,
+            days_back=days
+        )
+        
+        # Store HRV data in database
+        new_count = 0
+        updated_count = 0
+        skipped_count = 0
+        
+        print(f"💾 Storing {len(hrv_records)} HRV records in database...", flush=True)
+        
+        for idx, hrv_record in enumerate(hrv_records, 1):
+            calendar_date = hrv_record['calendar_date']
+            
+            # Progress update for large datasets
+            if idx % 50 == 0 or idx == len(hrv_records):
+                print(f"   Processing record {idx}/{len(hrv_records)}...", flush=True)
+            
+            # Check if record exists
+            result = await db.execute(
+                select(GarminHRV).where(
+                    GarminHRV.user_id == current_user.id,
+                    GarminHRV.calendar_date == calendar_date
+                )
+            )
+            existing_hrv = result.scalar_one_or_none()
+            
+            if existing_hrv:
+                # Check if data has actually changed to avoid unnecessary updates
+                has_changes = False
+                for key, value in hrv_record.items():
+                    if hasattr(existing_hrv, key) and getattr(existing_hrv, key) != value:
+                        has_changes = True
+                        setattr(existing_hrv, key, value)
+                
+                if has_changes:
+                    updated_count += 1
+                else:
+                    skipped_count += 1
+            else:
+                # Create new record
+                new_hrv = GarminHRV(
+                    user_id=current_user.id,
+                    **hrv_record
+                )
+                db.add(new_hrv)
+                new_count += 1
+        
+        await db.commit()
+        
+        print(f"✅ Database storage complete!", flush=True)
+        print(f"   New: {new_count} | Updated: {updated_count} | Unchanged: {skipped_count}", flush=True)
+        
+        return {
+            "message": "Health data synced successfully",
+            "hrv_new": new_count,
+            "hrv_updated": updated_count,
+            "hrv_unchanged": skipped_count,
+            "total_records": new_count + updated_count,
+            "days_requested": days,
+            "records_fetched": len(hrv_records)
+        }
+        
+    except HTTPException:
+        # Re-raise HTTP exceptions as-is (already have proper status codes)
+        raise
+    except Exception as e:
+        # Log detailed error for debugging
+        import traceback
+        error_trace = traceback.format_exc()
+        print(f"\n❌ HRV SYNC ERROR:", flush=True)
+        print(f"   Days requested: {days}", flush=True)
+        print(f"   Error type: {type(e).__name__}", flush=True)
+        print(f"   Error message: {str(e)}", flush=True)
+        print(f"   Full traceback:\n{error_trace}", flush=True)
+        
+        # Provide specific error messages based on error type
+        error_str = str(e).lower()
+        if 'timeout' in error_str or 'timed out' in error_str:
+            detail = f"Sync timed out after {days} days. Try syncing 180 days at a time instead."
+        elif 'auth' in error_str or 'token' in error_str or '401' in error_str:
+            detail = "Garmin authentication expired. Please reconnect your account."
+        elif 'rate' in error_str or '429' in error_str:
+            detail = "Garmin API rate limit reached. Please wait a few minutes and try again."
+        elif 'connection' in error_str or 'network' in error_str:
+            detail = "Network connection error. Please check your internet and try again."
+        else:
+            detail = f"Failed to sync health data: {str(e)}"
+        
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=detail
+        )
