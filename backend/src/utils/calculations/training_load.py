@@ -2,7 +2,13 @@
 Training Load Calculations (CTL, ATL, TSB)
 
 Implements Performance Management Chart (PMC) metrics used in TrainingPeaks.
+
+Formula:
+    CTL = CTL_yesterday × e^(-1/42) + TSS_today × (1 - e^(-1/42))
+    ATL = ATL_yesterday × e^(-1/7) + TSS_today × (1 - e^(-1/7))
+    TSB = CTL - ATL
 """
+import math
 from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from sqlalchemy import select, func
@@ -10,6 +16,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.garmin_activity import GarminActivity
 from src.utils.datetime_helpers import date_to_string, compare_date_for_sqlite
+
+# Exponential decay factors (precomputed for performance)
+CTL_TIME_CONSTANT = 42
+ATL_TIME_CONSTANT = 7
+CTL_DECAY = math.exp(-1 / CTL_TIME_CONSTANT)  # ≈ 0.976247
+ATL_DECAY = math.exp(-1 / ATL_TIME_CONSTANT)  # ≈ 0.866058
 
 
 async def calculate_training_load_metrics(
@@ -21,6 +33,10 @@ async def calculate_training_load_metrics(
 ) -> List[Dict]:
     """
     Calculate CTL, ATL, and TSB for a user over a specified period.
+    
+    ⚠️ CRITICAL: CTL/ATL are cumulative metrics that MUST be calculated from
+    the user's first activity to ensure consistency. The calculation ALWAYS
+    starts from the beginning and returns only the requested number of days.
     
     CTL (Chronic Training Load): 42-day exponential moving average of TSS
         - Represents fitness
@@ -42,17 +58,58 @@ async def calculate_training_load_metrics(
         sport_type: Optional sport filter (running, cycling, swimming)
         
     Returns:
-        List of daily metrics with date, tss, ctl, atl, tsb
+        List of daily metrics with date, tss, ctl, atl, tsb (only last 'days' entries)
     """
     if end_date is None:
         end_date = datetime.utcnow()
     
-    # We need extra history to prime the CTL/ATL calculations
-    # CTL needs 42 days of history, so fetch 84 days to have good initial values
-    lookback_days = days + 42
-    start_date = end_date - timedelta(days=lookback_days)
+    # CRITICAL FIX: Find user's first activity to calculate from the beginning
+    # This ensures CTL values are always consistent regardless of time range
+    first_activity_query = select(
+        func.min(GarminActivity.start_time_local)
+    ).where(
+        GarminActivity.user_id == user_id
+    )
     
-    # Fetch all activities with TSS in date range
+    if sport_type:
+        # Apply sport filter if specified
+        sport_type_lower = sport_type.lower()
+        if sport_type_lower == 'running':
+            first_activity_query = first_activity_query.where(
+                GarminActivity.activity_type.in_(['running', 'trail_running', 'treadmill_running', 'virtual_run'])
+            )
+        elif sport_type_lower == 'cycling':
+            first_activity_query = first_activity_query.where(
+                GarminActivity.activity_type.in_(['cycling', 'virtual_ride', 'indoor_cycling', 'mountain_biking'])
+            )
+        elif sport_type_lower == 'swimming':
+            first_activity_query = first_activity_query.where(
+                GarminActivity.activity_type.in_(['swimming', 'lap_swimming', 'open_water_swimming'])
+            )
+    
+    result = await db.execute(first_activity_query)
+    first_activity_date = result.scalar()
+    
+    if not first_activity_date:
+        # No activities found
+        return []
+    
+    # Parse the date string (SQLite returns ISO string format)
+    if isinstance(first_activity_date, str):
+        # SQLite: "YYYY-MM-DD HH:MM:SS.ffffff"
+        start_date = datetime.fromisoformat(first_activity_date.split('.')[0])
+    else:
+        start_date = first_activity_date
+    
+    # Always calculate from first activity (not from end_date - lookback_days)
+    # This ensures CTL is consistent regardless of requested time range
+    
+    # Fetch ALL activities from first activity to end_date
+    # CRITICAL: For end_date comparison, we need to include the entire day
+    # SQLite TEXT comparison requires full timestamp, not just date
+    from datetime import time
+    end_date_inclusive = datetime.combine(end_date.date(), time.max) if isinstance(end_date, datetime) else datetime.combine(end_date, time.max)
+    
     query = select(
         GarminActivity.start_time_local,
         GarminActivity.calculated_tss,
@@ -60,7 +117,7 @@ async def calculate_training_load_metrics(
     ).where(
         GarminActivity.user_id == user_id,
         GarminActivity.start_time_local >= compare_date_for_sqlite(start_date),
-        GarminActivity.start_time_local <= compare_date_for_sqlite(end_date)
+        GarminActivity.start_time_local <= end_date_inclusive.strftime("%Y-%m-%d %H:%M:%S")
     ).order_by(GarminActivity.start_time_local)
     
     result = await db.execute(query)
@@ -71,16 +128,19 @@ async def calculate_training_load_metrics(
     for activity in activities:
         # Apply sport filter if specified
         if sport_type:
-            activity_sport = (activity.activity_type or '').lower()
+            activity_type_lower = (activity.activity_type or '').lower()
             filter_sport = sport_type.lower()
             
-            # Check if activity matches the sport type
-            if filter_sport == 'running' and 'running' not in activity_sport:
-                continue
-            elif filter_sport == 'cycling' and 'cycling' not in activity_sport and 'biking' not in activity_sport:
-                continue
-            elif filter_sport == 'swimming' and 'swimming' not in activity_sport:
-                continue
+            # Use comprehensive activity type lists (same as analytics.py)
+            if filter_sport == 'running':
+                if activity_type_lower not in ['running', 'trail_running', 'treadmill_running', 'virtual_run']:
+                    continue
+            elif filter_sport == 'cycling':
+                if activity_type_lower not in ['cycling', 'virtual_ride', 'indoor_cycling', 'mountain_biking']:
+                    continue
+            elif filter_sport == 'swimming':
+                if activity_type_lower not in ['swimming', 'lap_swimming', 'open_water_swimming']:
+                    continue
         
         date_str = date_to_string(activity.start_time_local)
         tss = activity.calculated_tss or 0
@@ -90,23 +150,26 @@ async def calculate_training_load_metrics(
         else:
             daily_tss[date_str] = tss
     
-    # Calculate CTL/ATL/TSB for each day
+    # Calculate CTL/ATL/TSB for each day using correct exponential formula
     metrics = []
-    ctl = 0.0  # Initial CTL
-    atl = 0.0  # Initial ATL
+    ctl = 0.0  # Initial CTL (starts at 0 on first activity date)
+    atl = 0.0  # Initial ATL (starts at 0 on first activity date)
     
-    # Generate data for all days in range
+    # Generate data for ALL days from first activity to end_date
     current_date = start_date
     while current_date <= end_date:
         date_str = date_to_string(current_date)
         daily_tss_value = daily_tss.get(date_str, 0.0)
         
-        # Calculate exponential moving averages
-        # CTL: 42-day EMA (time constant = 42)
-        ctl = ctl * (1 - 1/42) + daily_tss_value * (1/42)
+        # Exponential moving averages using correct formula:
+        # EMA = EMA_yesterday × e^(-1/k) + TSS_today × (1 - e^(-1/k))
+        # where k is the time constant (42 for CTL, 7 for ATL)
         
-        # ATL: 7-day EMA (time constant = 7)
-        atl = atl * (1 - 1/7) + daily_tss_value * (1/7)
+        # CTL: 42-day EMA
+        ctl = ctl * CTL_DECAY + daily_tss_value * (1 - CTL_DECAY)
+        
+        # ATL: 7-day EMA
+        atl = atl * ATL_DECAY + daily_tss_value * (1 - ATL_DECAY)
         
         # TSB: Fitness minus Fatigue
         tsb = ctl - atl
@@ -121,8 +184,13 @@ async def calculate_training_load_metrics(
         
         current_date += timedelta(days=1)
     
-    # Return only the requested number of days (not the priming period)
-    return metrics[-days:]
+    # Return only the requested number of days (most recent)
+    # This ensures CTL is always calculated from the beginning but we only
+    # return the time range the caller requested
+    if len(metrics) <= days:
+        return metrics
+    else:
+        return metrics[-days:]
 
 
 async def get_current_training_metrics(
@@ -156,8 +224,17 @@ async def get_current_training_metrics(
     # Get today's metrics (last item)
     current = metrics[-1]
     
-    # Calculate weekly TSS (last 7 days)
-    weekly_tss = sum(day['tss'] for day in metrics[-7:])
+    # Calculate weekly TSS for current calendar week (Monday-Sunday)
+    today = datetime.now().date()
+    weekday = today.weekday()  # Monday=0, Sunday=6
+    monday = today - timedelta(days=weekday)  # Start of current week
+    
+    # Sum TSS only from days in current week (Monday to today)
+    weekly_tss = 0.0
+    for day in metrics:
+        day_date = datetime.fromisoformat(day['date']).date()
+        if day_date >= monday and day_date <= today:
+            weekly_tss += day['tss']
     
     # Determine trend by comparing to 7 days ago
     if len(metrics) >= 8:

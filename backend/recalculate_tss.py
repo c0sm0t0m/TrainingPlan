@@ -68,14 +68,15 @@ async def recalculate_all_tss():
                 elif 'swim' in sport_key:
                     threshold_hr = user.swim_threshold_hr
                 else:
-                    # For "other" sports (skiing, tennis, etc.), use max_hr like TrainingPeaks does
-                    # This gives more accurate TSS than using running threshold
-                    threshold_hr = user.max_hr if user.max_hr else (user.running_threshold_hr or 165)
+                    # For "other" sports (skiing, tennis, etc.), use running threshold as default
+                    # This matches TrainingPeaks behavior - running threshold is the general aerobic threshold
+                    threshold_hr = user.running_threshold_hr if user.running_threshold_hr else (user.max_hr * 0.9 if user.max_hr else 165)
                 
                 # Prepare user settings with CORRECT threshold_hr
                 user_settings = {
                     "ftp": user.ftp,
                     "threshold_pace": user.threshold_pace,
+                    "swim_threshold_pace": user.swim_threshold_pace,
                     "threshold_hr": threshold_hr,
                     "max_hr": user.max_hr,
                     "resting_hr": user.resting_hr,

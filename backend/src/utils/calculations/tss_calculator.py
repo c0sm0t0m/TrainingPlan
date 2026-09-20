@@ -20,18 +20,19 @@ def calculate_running_tss(
     threshold_hr: int = 180,
     average_pace_min_per_km: Optional[float] = None,
     threshold_pace_min_per_km: Optional[float] = None,
-) -> float:
+) -> tuple[float, Optional[float]]:
     """
-    Calculate running TSS (rTSS).
+    Calculate running TSS (rTSS) and Intensity Factor (IF).
     
     Fallback hierarchy (matches TrainingPeaks):
-    1. HR-based (most accurate without elevation time-series for NGP)
-    2. Pace-based (less accurate without elevation adjustment)
+    1. Pace-based with elevation (NGP) - most accurate when time-series elevation available
+    2. HR-based - accurate fallback using lactate threshold HR
     3. Duration-based estimate
     
     Note: TrainingPeaks uses Normalized Graded Pace (NGP) which accounts for
-    elevation changes. Since we don't have elevation time-series data, we
-    prioritize HR-based calculation which TrainingPeaks does as well.
+    elevation changes using time-series elevation data. When NGP is available,
+    it's more accurate than HR-based. We currently don't have time-series
+    elevation data, so HR-based is used as the primary method.
     
     Args:
         duration_minutes: Duration of the run in minutes
@@ -41,28 +42,30 @@ def calculate_running_tss(
         threshold_pace_min_per_km: Threshold pace in minutes per kilometer (e.g., 4.0 = 4:00/km)
         
     Returns:
-        Running TSS value
+        Tuple of (TSS value, Intensity Factor or None)
     """
-    # Priority 1: HR-based (matches TrainingPeaks hrTSS)
-    if average_hr and threshold_hr and threshold_hr > 0:
-        # HR-based rTSS: TSS = (duration_hours * intensity_factor^2 * 100)
-        intensity_factor = average_hr / threshold_hr
-        duration_hours = duration_minutes / 60
-        tss = duration_hours * (intensity_factor ** 2) * 100
-        return tss
-    
-    # Priority 2: Pace-based fallback (without elevation = less accurate)
-    elif average_pace_min_per_km and threshold_pace_min_per_km and threshold_pace_min_per_km > 0:
+    # Priority 1: Pace-based (most accurate with NGP/elevation data)
+    # TODO: When time-series elevation data is available, calculate NGP and use pace-based
+    # For now, this is only used if pace data is available without elevation adjustment
+    if average_pace_min_per_km and threshold_pace_min_per_km and threshold_pace_min_per_km > 0:
         # Pace-based rTSS (inverse - faster pace = higher intensity)
         # If average pace is 5:00/km and threshold is 4:00/km, IF = 4/5 = 0.8
         # This is equivalent to: speed/threshold_speed
         intensity_factor = threshold_pace_min_per_km / average_pace_min_per_km
         duration_hours = duration_minutes / 60
         tss = duration_hours * (intensity_factor ** 2) * 100
-        return tss
+        return (tss, intensity_factor)
+    
+    # Priority 2: HR-based (accurate using lactate threshold HR)
+    elif average_hr and threshold_hr and threshold_hr > 0:
+        # HR-based rTSS: TSS = (duration_hours * intensity_factor^2 * 100)
+        intensity_factor = average_hr / threshold_hr
+        duration_hours = duration_minutes / 60
+        tss = duration_hours * (intensity_factor ** 2) * 100
+        return (tss, intensity_factor)
     
     # Priority 3: Duration-based estimate (assume moderate intensity)
-    return duration_minutes * 0.7  # ~42 TSS per hour at moderate pace
+    return (duration_minutes * 0.7, None)  # ~42 TSS per hour at moderate pace
 
 
 def calculate_cycling_tss(
@@ -71,9 +74,9 @@ def calculate_cycling_tss(
     threshold_power: Optional[float] = None,
     average_hr: Optional[int] = None,
     threshold_hr: int = 180,
-) -> float:
+) -> tuple[float, Optional[float]]:
     """
-    Calculate cycling TSS.
+    Calculate cycling TSS and Intensity Factor (IF).
     
     Fallback hierarchy:
     1. Power-based (FTP) - most accurate
@@ -88,7 +91,7 @@ def calculate_cycling_tss(
         threshold_hr: Lactate threshold heart rate
         
     Returns:
-        Cycling TSS value
+        Tuple of (TSS value, Intensity Factor or None)
     """
     # Priority 1: Power-based TSS (most accurate)
     if normalized_power and threshold_power and threshold_power > 0:
@@ -98,7 +101,7 @@ def calculate_cycling_tss(
         intensity_factor = normalized_power / threshold_power
         duration_hours = duration_minutes / 60
         tss = duration_hours * (intensity_factor ** 2) * 100
-        return tss
+        return (tss, intensity_factor)
     
     # Priority 2: HR-based fallback
     elif average_hr and threshold_hr and threshold_hr > 0:
@@ -106,37 +109,61 @@ def calculate_cycling_tss(
         intensity_factor = average_hr / threshold_hr
         duration_hours = duration_minutes / 60
         tss = duration_hours * (intensity_factor ** 2) * 100
-        return tss
+        return (tss, intensity_factor)
     
     # Priority 3: Duration-based estimate
-    return duration_minutes * 0.8  # ~48 TSS per hour at moderate pace
+    return (duration_minutes * 0.8, None)  # ~48 TSS per hour at moderate pace
 
 
 def calculate_swimming_tss(
     duration_minutes: int,
     distance_meters: Optional[float] = None,
-    threshold_pace_min_per_100m: float = 1.5,
-) -> float:
+    threshold_pace_min_per_100m: Optional[float] = None,
+) -> tuple[float, Optional[float]]:
     """
-    Calculate swimming TSS (sTSS).
+    Calculate swimming TSS (sTSS) and Intensity Factor (IF) using TrainingPeaks formula.
+    
+    Swimming TSS uses IF³ (cubed) instead of IF² because water resistance
+    causes physiological stress to increase faster than in running/cycling.
+    
+    Formula: sTSS = (IF³) × hours × 100
+    Where:
+        - IF = Intensity Factor = NSS / FTP
+        - NSS = Normalized Swim Speed (meters/minute)
+        - FTP = Functional Threshold Pace (meters/minute)
+    
+    Reference: https://www.trainingpeaks.com/learn/articles/calculating-swimming-tss-score/
     
     Args:
-        duration_minutes: Duration of the swim in minutes
+        duration_minutes: Duration of the swim in minutes (excluding rest)
         distance_meters: Distance swum in meters
-        threshold_pace_min_per_100m: Threshold pace in minutes per 100m
+        threshold_pace_min_per_100m: User's threshold pace in minutes per 100m (from settings).
+                                      If None, defaults to 1.5 min/100m.
         
     Returns:
-        Swimming TSS value
+        Tuple of (TSS value, Intensity Factor or None)
     """
     if distance_meters and distance_meters > 0:
-        # Calculate pace
-        pace_min_per_100m = duration_minutes / (distance_meters / 100)
-        intensity_factor = threshold_pace_min_per_100m / pace_min_per_100m
+        # Use default threshold if not provided
+        if threshold_pace_min_per_100m is None:
+            threshold_pace_min_per_100m = 1.5  # Default: 1.5 min/100m
+        
+        # Convert threshold pace to meters/minute (FTP)
+        # Example: 1.5 min/100m = 100/1.5 = 66.67 meters/minute
+        ftp_meters_per_min = 100 / threshold_pace_min_per_100m
+        
+        # Calculate normalized swim speed (NSS) in meters/minute
+        nss_meters_per_min = distance_meters / duration_minutes
+        
+        # Calculate intensity factor
+        intensity_factor = nss_meters_per_min / ftp_meters_per_min
+        
+        # Swimming TSS uses IF³ (cubed, not squared!)
         duration_hours = duration_minutes / 60
-        return duration_hours * (intensity_factor ** 2) * 100
+        return (duration_hours * (intensity_factor ** 3) * 100, intensity_factor)
     
     # Fallback: swimming is generally higher intensity
-    return duration_minutes * 0.9  # ~54 TSS per hour
+    return (duration_minutes * 0.9, None)  # ~54 TSS per hour
 
 
 def calculate_generic_tss(
@@ -168,10 +195,11 @@ def calculate_activity_tss(
     normalized_power: Optional[float] = None,
     threshold_power: Optional[float] = None,
     threshold_pace_min_per_km: Optional[float] = None,
+    threshold_pace_min_per_100m: Optional[float] = None,
     training_load: Optional[float] = None,
-) -> float:
+) -> tuple[float, Optional[float]]:
     """
-    Calculate TSS for any activity type based on available data.
+    Calculate TSS and Intensity Factor (IF) for any activity type based on available data.
     
     Fallback strategy by sport (matches TrainingPeaks):
     - Cycling: FTP (power) > HR > Duration
@@ -198,17 +226,18 @@ def calculate_activity_tss(
         normalized_power: Normalized Power (cycling)
         threshold_power: FTP (cycling)
         threshold_pace_min_per_km: Threshold pace for running (min/km)
+        threshold_pace_min_per_100m: Threshold pace for swimming (min/100m)
         training_load: Garmin's training load (IGNORED - we calculate our own)
         
     Returns:
-        TSS value
+        Tuple of (TSS value, Intensity Factor or None)
     """
     # DO NOT use Garmin's training_load - it uses different thresholds
     # Always calculate TSS using the user's configured thresholds
     
     sport_lower = sport_type.lower()
     
-    # Running: HR > Pace > Duration (HR prioritized without NGP elevation data)
+    # Running: Pace (with NGP if elevation available) > HR > Duration
     if 'run' in sport_lower:
         average_pace_min_per_km = None
         if distance_meters and distance_meters > 0 and average_speed_mps and average_speed_mps > 0:
@@ -239,19 +268,20 @@ def calculate_activity_tss(
     elif 'swim' in sport_lower:
         # Check if we have HR data for fallback
         if distance_meters and distance_meters > 0:
-            # Pace-based calculation
+            # Pace-based calculation using user's threshold
             return calculate_swimming_tss(
                 duration_minutes=duration_minutes,
                 distance_meters=distance_meters,
+                threshold_pace_min_per_100m=threshold_pace_min_per_100m,
             )
         elif average_hr and threshold_hr and threshold_hr > 0:
             # HR-based fallback for swimming
             intensity_factor = average_hr / threshold_hr
             duration_hours = duration_minutes / 60
-            return duration_hours * (intensity_factor ** 2) * 100
+            return (duration_hours * (intensity_factor ** 2) * 100, intensity_factor)
         else:
             # Duration-based fallback
-            return duration_minutes * 0.9  # Swimming is high intensity
+            return (duration_minutes * 0.9, None)  # Swimming is high intensity
     
     # Other Sports (cross-country skiing, strength, etc.): HR > Duration
     else:
@@ -259,10 +289,10 @@ def calculate_activity_tss(
         if average_hr and threshold_hr and threshold_hr > 0:
             intensity_factor = average_hr / threshold_hr
             duration_hours = duration_minutes / 60
-            return duration_hours * (intensity_factor ** 2) * 100
+            return (duration_hours * (intensity_factor ** 2) * 100, intensity_factor)
         
         # Priority 2: Duration-based estimate with moderate intensity
-        return calculate_generic_tss(duration_minutes, intensity_factor=0.6)
+        return (calculate_generic_tss(duration_minutes, intensity_factor=0.6), 0.6)
 
 
 def calculate_workout_tss(
@@ -309,16 +339,16 @@ def calculate_workout_tss(
     return calculate_generic_tss(duration_minutes, intensity_factor)
 
 
-def calculate_tss_from_activity(activity: dict, user_settings: dict) -> float:
+def calculate_tss_from_activity(activity: dict, user_settings: dict) -> tuple[float, Optional[float]]:
     """
-    Wrapper function to calculate TSS from a Garmin activity dict and user settings.
+    Wrapper function to calculate TSS and Intensity Factor from a Garmin activity dict and user settings.
     
     Args:
         activity: Garmin activity dictionary
         user_settings: User settings dict with keys: ftp, threshold_pace, max_hr, resting_hr, threshold_hr
         
     Returns:
-        Calculated TSS value
+        Tuple of (TSS value, Intensity Factor or None)
     """
     # Extract activity data
     activity_type = activity.get("activityType", {})
@@ -357,6 +387,10 @@ def calculate_tss_from_activity(activity: dict, user_settings: dict) -> float:
     threshold_pace_sec_per_km = user_settings.get("threshold_pace")
     threshold_pace_min_per_km = threshold_pace_sec_per_km / 60 if threshold_pace_sec_per_km else None
     
+    # Swimming threshold pace (seconds per 100m) - convert to min/100m if present
+    swim_threshold_pace_sec_per_100m = user_settings.get("swim_threshold_pace")
+    threshold_pace_min_per_100m = swim_threshold_pace_sec_per_100m / 60 if swim_threshold_pace_sec_per_100m else None
+    
     # Use threshold_hr (lactate threshold), not max_hr
     threshold_hr = user_settings.get("threshold_hr")
     if not threshold_hr:
@@ -374,5 +408,6 @@ def calculate_tss_from_activity(activity: dict, user_settings: dict) -> float:
         normalized_power=normalized_power,
         threshold_power=threshold_power,
         threshold_pace_min_per_km=threshold_pace_min_per_km,
+        threshold_pace_min_per_100m=threshold_pace_min_per_100m,
         training_load=training_load,
     )

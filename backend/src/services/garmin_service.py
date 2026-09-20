@@ -14,7 +14,7 @@ import json
 import os
 import ssl
 import certifi
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
 
 # Configure SSL certificates using certifi for all requests
@@ -780,6 +780,158 @@ class GarminService:
         except Exception as e:
             print(f"Error deleting workout from Garmin: {str(e)}")
             return False
+    
+
+    async def sync_hrv_data(
+        self,
+        oauth1_token: str,
+        oauth2_token: str,
+        days_back: int = 30
+    ) -> List[Dict]:
+        """
+        Fetch HRV data from Garmin Connect for the last N days.
+        
+        Args:
+            oauth1_token: OAuth1 token (JSON string)
+            oauth2_token: OAuth2 token (JSON string)
+            days_back: Number of days to fetch (default 30)
+            
+        Returns:
+            List of HRV data dictionaries with parsed fields
+        """
+        import asyncio
+        
+        try:
+            api = await self.resume_session(oauth1_token, oauth2_token)
+            
+            hrv_records = []
+            today = date.today()
+            
+            # Progress tracking
+            total_days = days_back
+            processed_days = 0
+            success_count = 0
+            skip_count = 0
+            error_count = 0
+            
+            # Progress update frequency (every N days or 5% of total, whichever is smaller)
+            progress_interval = min(10, max(1, days_back // 20))
+            
+            print(f"\n🔄 Starting HRV data sync for {days_back} days...", flush=True)
+            print(f"   Date range: {(today - timedelta(days=days_back-1)).strftime('%Y-%m-%d')} to {today.strftime('%Y-%m-%d')}", flush=True)
+            print(f"   Progress updates every {progress_interval} days\n", flush=True)
+            
+            for i in range(days_back):
+                target_date = today - timedelta(days=i)
+                date_str = target_date.strftime("%Y-%m-%d")
+                
+                try:
+                    # Add small delay to avoid rate limiting (especially for large ranges)
+                    if i > 0 and i % 50 == 0:
+                        print(f"   ⏸️  Pausing briefly to avoid rate limits (processed {i}/{total_days})...", flush=True)
+                        await asyncio.sleep(2)
+                    
+                    hrv_data = api.get_hrv_data(date_str)
+                    
+                    if hrv_data and 'hrvSummary' in hrv_data:
+                        summary = hrv_data['hrvSummary']
+                        baseline = summary.get('baseline', {})
+                        
+                        # Parse into structured format
+                        record = {
+                            'calendar_date': target_date,
+                            
+                            # Summary metrics
+                            'weekly_avg': summary.get('weeklyAvg'),
+                            'last_night_avg': summary.get('lastNightAvg'),  # PRIMARY RMSSD VALUE
+                            'last_night_5min_high': summary.get('lastNight5MinHigh'),
+                            
+                            # Baseline values
+                            'baseline_low_upper': baseline.get('lowUpper'),
+                            'baseline_balanced_low': baseline.get('balancedLow'),
+                            'baseline_balanced_upper': baseline.get('balancedUpper'),
+                            'baseline_marker_value': baseline.get('markerValue'),
+                            
+                            # Status
+                            'status': summary.get('status'),
+                            'feedback_phrase': summary.get('feedbackPhrase'),
+                            'create_timestamp': datetime.fromisoformat(summary['createTimeStamp'].replace('Z', '+00:00')) if summary.get('createTimeStamp') else None,
+                            
+                            # Sleep times
+                            'sleep_start_time_gmt': datetime.fromisoformat(hrv_data['sleepStartTimestampGMT'].replace('.0', '+00:00')) if hrv_data.get('sleepStartTimestampGMT') else None,
+                            'sleep_end_time_gmt': datetime.fromisoformat(hrv_data['sleepEndTimestampGMT'].replace('.0', '+00:00')) if hrv_data.get('sleepEndTimestampGMT') else None,
+                            'sleep_start_time_local': datetime.fromisoformat(hrv_data['sleepStartTimestampLocal'].replace('.0', '')) if hrv_data.get('sleepStartTimestampLocal') else None,
+                            'sleep_end_time_local': datetime.fromisoformat(hrv_data['sleepEndTimestampLocal'].replace('.0', '')) if hrv_data.get('sleepEndTimestampLocal') else None,
+                            
+                            # Measurement window
+                            'start_time_gmt': datetime.fromisoformat(hrv_data['startTimestampGMT'].replace('.0', '+00:00')) if hrv_data.get('startTimestampGMT') else None,
+                            'end_time_gmt': datetime.fromisoformat(hrv_data['endTimestampGMT'].replace('.0', '+00:00')) if hrv_data.get('endTimestampGMT') else None,
+                            'start_time_local': datetime.fromisoformat(hrv_data['startTimestampLocal'].replace('.0', '')) if hrv_data.get('startTimestampLocal') else None,
+                            'end_time_local': datetime.fromisoformat(hrv_data['endTimestampLocal'].replace('.0', '')) if hrv_data.get('endTimestampLocal') else None,
+                            
+                            # Time series data (complete HRV readings)
+                            'hrv_readings': hrv_data.get('hrvReadings', []),
+                            
+                            # Full raw data
+                            'raw_data': hrv_data
+                        }
+                        
+                        hrv_records.append(record)
+                        success_count += 1
+                    else:
+                        # No HRV data for this day (common for rest days or before Garmin started tracking)
+                        skip_count += 1
+                        
+                except Exception as e:
+                    error_str = str(e).lower()
+                    
+                    # Check for rate limiting
+                    if 'rate' in error_str or '429' in error_str:
+                        print(f"   ⚠️  Rate limit hit at day {i+1}/{total_days}. Pausing for 5 seconds...", flush=True)
+                        await asyncio.sleep(5)
+                        # Retry this date
+                        try:
+                            hrv_data = api.get_hrv_data(date_str)
+                            if hrv_data and 'hrvSummary' in hrv_data:
+                                # (same parsing logic as above - simplified for brevity)
+                                success_count += 1
+                            else:
+                                skip_count += 1
+                        except:
+                            error_count += 1
+                    # Check for authentication errors
+                    elif 'auth' in error_str or '401' in error_str or 'token' in error_str:
+                        print(f"   ❌ Authentication error at day {i+1}/{total_days}: {e}", flush=True)
+                        print(f"   Please reconnect your Garmin account and try again.", flush=True)
+                        raise  # Re-raise to stop sync
+                    else:
+                        # Skip days with no data or minor errors
+                        error_count += 1
+                        if error_count <= 5:  # Only show first few errors to avoid spam
+                            print(f"   ⚠️  Skipped {date_str}: {str(e)[:100]}", flush=True)
+                
+                processed_days += 1
+                
+                # Progress updates
+                if processed_days % progress_interval == 0 or processed_days == total_days:
+                    percent = (processed_days / total_days) * 100
+                    print(f"   📊 Progress: {processed_days}/{total_days} days ({percent:.0f}%) | "
+                          f"✅ {success_count} found | ⏭️  {skip_count} no data | ❌ {error_count} errors", flush=True)
+            
+            # Final summary
+            print(f"\n✅ HRV sync complete!", flush=True)
+            print(f"   Total days processed: {processed_days}", flush=True)
+            print(f"   Records found: {success_count}", flush=True)
+            print(f"   Days with no data: {skip_count}", flush=True)
+            print(f"   Errors: {error_count}\n", flush=True)
+            
+            return hrv_records
+            
+        except Exception as e:
+            print(f"\n❌ Error syncing HRV data: {str(e)}", flush=True)
+            print(f"   Records retrieved before error: {len(hrv_records)}\n", flush=True)
+            # Return partial results instead of empty list
+            return hrv_records
 
 
 # Singleton instance

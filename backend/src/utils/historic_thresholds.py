@@ -148,15 +148,17 @@ async def _estimate_week_thresholds(
     all_activities: List[GarminActivity]
 ) -> Dict:
     """
-    Estimate thresholds for a specific week based on performance.
+    Estimate thresholds for a specific week based on ACTUAL PERFORMANCE.
     
     Strategy:
     - Current week (weeks_ago=0): Use user's current thresholds
-    - Recent weeks (1-4 weeks ago): Small degradation (98-99%)
-    - Older weeks: Analyze activity intensity and estimate based on performance trend
+    - ALL other weeks: Analyze actual activity performance
+      * For running: Look at HR during runs (85th percentile estimation)
+      * For cycling: Look at power during rides
+      * Blend: 70% performance data + 30% trend-based extrapolation
     
-    For running: Look at 85-90th percentile HR in hard efforts
-    For cycling: Look at 85-90th percentile power in hard efforts
+    For running: Estimate threshold as avg_hr + (max_hr - avg_hr) * 0.35
+    For cycling: Use 90th percentile power
     """
     # Base threshold values
     thresholds = current_thresholds.copy()
@@ -165,67 +167,110 @@ async def _estimate_week_thresholds(
     if weeks_ago == 0:
         method = "current"
         confidence = 1.0
-    elif weeks_ago <= 4:
-        # Recent weeks - assume 0.5-1% degradation per week (conservative)
-        degradation = 1.0 - (weeks_ago * 0.005)
-        thresholds["running_threshold_hr"] = int(current_thresholds["running_threshold_hr"] * degradation)
-        thresholds["cycling_threshold_hr"] = int(current_thresholds["cycling_threshold_hr"] * degradation)
-        thresholds["ftp"] = int(current_thresholds["ftp"] * degradation)
-        method = "linear_degradation"
-        confidence = 0.95
-    else:
-        # Older weeks - estimate from performance
+        # ALL weeks (not current) - analyze actual performance
         if week_activities:
             running_hrs = []
+            running_hrs_key_sessions = []  # Prioritize hard efforts
             cycling_powers = []
             
             for activity in week_activities:
                 sport = activity.activity_type.lower()
+                duration_min = (activity.duration_seconds / 60) if activity.duration_seconds else 0
                 
-                # Running: collect high-intensity HR values
+                # Running: collect HR values with special handling for key sessions
                 if 'run' in sport and activity.average_hr and activity.max_hr:
-                    # Use 85th percentile HR as proxy for threshold
-                    estimated_threshold = activity.average_hr + (activity.max_hr - activity.average_hr) * 0.35
-                    running_hrs.append(estimated_threshold)
+                    # Detect KEY SESSIONS: 20-60 min hard efforts (max HR > 85% of user max)
+                    is_key_session = (
+                        20 <= duration_min <= 60 and
+                        activity.max_hr >= (current_thresholds["max_hr"] * 0.85)
+                    )
+                    
+                    if is_key_session:
+                        # KEY SESSION: Use avg HR as threshold estimate (1-hour effort principle)
+                        # For 20-60 min hard efforts, avg HR ≈ threshold HR
+                        # Adjust slightly based on duration:
+                        # - 20-30 min: avg HR ≈ 105% of threshold → divide by 1.05
+                        # - 30-45 min: avg HR ≈ 102% of threshold → divide by 1.02  
+                        # - 45-60 min: avg HR ≈ threshold → use as-is
+                        if duration_min < 30:
+                            estimated_threshold = activity.average_hr / 1.05
+                        elif duration_min < 45:
+                            estimated_threshold = activity.average_hr / 1.02
+                        else:
+                            estimated_threshold = activity.average_hr  # ~1 hour = threshold
+                        
+                        running_hrs_key_sessions.append(estimated_threshold)
+                    else:
+                        # Regular run: Use 85th percentile estimation
+                        # Logic: avg_hr + 35% of the way to max_hr
+                        estimated_threshold = activity.average_hr + (activity.max_hr - activity.average_hr) * 0.35
+                        running_hrs.append(estimated_threshold)
                 
                 # Cycling: collect high-intensity power values
-                elif ('cycl' in sport or 'bike' in sport) and activity.raw_data:
+                elif ('cycl' in sport or 'bike' in sport or 'ride' in sport) and activity.raw_data:
                     # Check if we have power data
                     time_series = activity.raw_data.get('time_series', {})
                     if time_series.get('metadata', {}).get('has_power'):
                         power_stats = time_series.get('metadata', {}).get('power_stats', {})
                         if power_stats.get('avg'):
-                            # Use 90th percentile power
-                            estimated_ftp = power_stats['avg'] * 1.15  # Rough estimate
-                            cycling_powers.append(estimated_ftp)
+                            # For 20-60 min hard efforts, use avg power more directly
+                            is_hard_ride = duration_min >= 20 and activity.average_hr and activity.average_hr >= (current_thresholds["max_hr"] * 0.80)
+                            if is_hard_ride:
+                                # Hard ride: avg power ≈ 95% of FTP for <1 hour
+                                estimated_ftp = power_stats['avg'] / 0.95
+                            else:
+                                # Easy ride: more conservative estimate
+                                estimated_ftp = power_stats['avg'] * 1.15
+            elif running_hrs:
+                # Regular runs only (no key sessions) cycling_powers.append(estimated_ftp)
             
-            # Calculate median thresholds from this week's activities
-            if running_hrs:
-                estimated_run_hr = int(statistics.median(running_hrs))
-                # Smooth with current value (60% estimate, 40% trend)
-                trend_factor = 1.0 - (weeks_ago * 0.003)  # 0.3% per week
+            # Calculate thresholds from this week's performance
+            # PRIORITIZE key sessions if available
+            trend_factor = 1.0 - (weeks_ago * 0.003)  # 0.3% per week baseline
+            
+            if running_hrs_key_sessions:
+                # We have KEY SESSIONS - use these preferentially!
+                estimated_run_hr = int(statistics.median(running_hrs_key_sessions))
+                # High confidence: 80% from key session data, 20% from trend
                 thresholds["running_threshold_hr"] = int(
-                    estimated_run_hr * 0.6 + current_thresholds["running_threshold_hr"] * trend_factor * 0.4
+                    estimated_run_hr * 0.8 + current_thresholds["running_threshold_hr"] * trend_factor * 0.2
                 )
+                thresholds["cycling_threshold_hr"] = thresholds["running_threshold_hr"] - 5
+            elif running_hrs:
+                estimated_run_hr = int(statistics.median(running_hrs))
+                # Blend: 70% from performance, 30% from trend
+                thresholds["running_threshold_hr"] = int(
+                    estimated_run_hr * 0.7 + current_thresholds["running_threshold_hr"] * trend_factor * 0.3
+                )
+                # Also update cycling HR (correlated with running fitness)
+                thresholds["cycling_threshold_hr"] = thresholds["running_threshold_hr"] - 5  # Typically 5 bpm lower
             else:
-                # No running data, use trend-based degradation
-                trend_factor = 1.0 - (weeks_ago * 0.003)
+                # No running data, use trend-based estimate
                 thresholds["running_threshold_hr"] = int(current_thresholds["running_threshold_hr"] * trend_factor)
+                thresholds["cycling_threshold_hr"] = int(current_thresholds["cycling_threshold_hr"] * trend_factor)
             
             if cycling_powers:
                 estimated_ftp = int(statistics.median(cycling_powers))
-                trend_factor = 1.0 - (weeks_ago * 0.003)
+                # Blend: 70% from performance, 30% from trend
                 thresholds["ftp"] = int(
-                    estimated_ftp * 0.6 + current_thresholds["ftp"] * trend_factor * 0.4
+                    estimated_ftp * 0.7 + current_thresholds["ftp"] * trend_factor * 0.3
                 )
             else:
-                trend_factor = 1.0 - (weeks_ago * 0.003)
+                # No cycling data, use trend-based estimate
                 thresholds["ftp"] = int(current_thresholds["ftp"] * trend_factor)
             
-            method = "performance_analysis"
-            confidence = 0.7 if len(week_activities) >= 3 else 0.5
+            method = "performance_anakey sessions or more activities
+            if running_hrs_key_sessions:
+                confidence = 0.90  # Very high confidence from key sessions
+            el# Higher confidence with more activities
+            if len(week_activities) >= 5:
+                confidence = 0.85
+            elif len(week_activities) >= 3:
+                confidence = 0.75
+            else:
+                confidence = 0.65
         else:
-            # No activities this week - use trend
+            # No activities this week - use trend extrapolation only
             trend_factor = 1.0 - (weeks_ago * 0.003)
             thresholds["running_threshold_hr"] = int(current_thresholds["running_threshold_hr"] * trend_factor)
             thresholds["cycling_threshold_hr"] = int(current_thresholds["cycling_threshold_hr"] * trend_factor)
