@@ -1,0 +1,27 @@
+# QNAP Container Station compatibility overrides
+# Usage on NAS:
+#   docker compose -f docker-compose.yml -f docker-compose.qnap.yml up -d --build
+
+services:
+  backend:
+    # Container Station / older compose parsers may not support depends_on.condition
+    depends_on:
+      - postgres
+      - redis
+    # Run backend in non-dev mode on NAS (no --reload)
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+
+  celery_worker:
+    depends_on:
+      - postgres
+      - redis
+
+  celery_beat:
+    depends_on:
+      - redis
+
+  frontend:
+    # Remove hardcoded localhost API URL on NAS; frontend auto-detects browser host.
+    environment: {}
+    # Keep dev server command but ensure host/port are explicit for LAN access
+    command: npm run dev -- --host 0.0.0.0 --port 3000

@@ -6,11 +6,19 @@ echo "=================================="
 
 cd "$(dirname "$0")/backend"
 
-# Check if virtual environment exists
+# Check if virtual environment exists and is valid
 if [ ! -d "venv313" ]; then
     echo "❌ Virtual environment not found. Creating one..."
-    python3 -m venv venv313
+    python3.13 -m venv venv313
     source venv313/bin/activate
+    pip install -r requirements.txt
+elif [ ! -f "venv313/bin/python3" ] || ! venv313/bin/python3 --version &>/dev/null; then
+    echo "⚠️  Virtual environment is broken (possibly from moving the project)."
+    echo "   Recreating virtual environment..."
+    rm -rf venv313
+    python3.13 -m venv venv313
+    source venv313/bin/activate
+    echo "📦 Installing dependencies..."
     pip install -r requirements.txt
 else
     echo "✅ Activating virtual environment..."
@@ -24,11 +32,12 @@ if [ ! -f ".env" ]; then
 fi
 
 echo ""
-echo "📡 Starting FastAPI server on http://localhost:8000"
+echo "📡 Starting FastAPI server on http://0.0.0.0:8000 (accessible via LAN)"
 echo "📚 API Documentation: http://localhost:8000/docs"
 echo ""
 echo "Press Ctrl+C to stop"
 echo ""
 
-# Start the backend
-uvicorn src.main:app --reload --port 8000
+# Start the backend - use 0.0.0.0 to allow LAN access
+# Use full path to uvicorn from venv to ensure it's found
+venv313/bin/uvicorn src.main:app --reload --host 0.0.0.0 --port 8000

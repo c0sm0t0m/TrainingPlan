@@ -1,7 +1,7 @@
 #!/bin/bash
-# Stop all TrainingPlan services
+# Stop all Kinesis services
 
-echo "🛑 Stopping TrainingPlan services..."
+echo "🛑 Stopping Kinesis services..."
 echo "===================================="
 
 # Find and kill backend processes
