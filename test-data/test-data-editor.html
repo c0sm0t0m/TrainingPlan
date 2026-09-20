@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kinesis - Test Data Editor</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 2rem;
+            min-height: 100vh;
+        }
+        
+        .container {
+            max-width: 800px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            overflow: hidden;
+        }
+        
+        .header {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 2rem;
+            text-align: center;
+        }
+        
+        .header h1 {
+            font-size: 2rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .header p {
+            opacity: 0.9;
+        }
+        
+        .content {
+            padding: 2rem;
+        }
+        
+        .form-group {
+            margin-bottom: 1.5rem;
+        }
+        
+        label {
+            display: block;
+            font-weight: 600;
+            margin-bottom: 0.5rem;
+            color: #333;
+        }
+        
+        input, select, textarea {
+            width: 100%;
+            padding: 0.75rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-family: inherit;
+            transition: border-color 0.2s;
+        }
+        
+        input:focus, select:focus, textarea:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+        }
+        
+        .day-selector {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+        
+        .day-chip {
+            padding: 0.5rem 1rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            user-select: none;
+        }
+        
+        .day-chip:hover {
+            border-color: #667eea;
+        }
+        
+        .day-chip.selected {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 1rem;
+            margin-top: 2rem;
+        }
+        
+        button {
+            flex: 1;
+            padding: 1rem;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .btn-secondary {
+            background: #f5f5f5;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #e0e0e0;
+        }
+        
+        .info-box {
+            background: #f0f4ff;
+            border-left: 4px solid #667eea;
+            padding: 1rem;
+            margin-bottom: 1.5rem;
+            border-radius: 4px;
+        }
+        
+        .info-box strong {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #667eea;
+        }
+        
+        .json-output {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 1rem;
+            border-radius: 6px;
+            font-family: 'Courier New', monospace;
+            font-size: 0.875rem;
+            overflow-x: auto;
+            margin-top: 1rem;
+        }
+        
+        .alert {
+            padding: 1rem;
+            border-radius: 6px;
+            margin-bottom: 1rem;
+        }
+        
+        .alert-success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+        }
+        
+        .alert-info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🧪 Test Data Editor</h1>
+            <p>Configure AI Training Plan Test Data</p>
+        </div>
+        
+        <div class="content">
+            <div class="alert alert-info">
+                <strong>📅 Next Monday:</strong> <span id="nextMonday"></span>
+                <br>
+                <strong>📊 Training Weeks:</strong> <span id="trainingWeeks"></span>
+            </div>
+            
+            <form id="configForm">
+                <div class="form-group">
+                    <label for="eventName">Event Name</label>
+                    <input type="text" id="eventName" value="Berlin Marathon 2026" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="eventDate">Event Date</label>
+                    <input type="date" id="eventDate" value="2026-09-27" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="eventDistance">Target Distance</label>
+                    <input type="text" id="eventDistance" value="Marathon (42.195 km)" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="goalTime">Goal Time (HH:MM:SS)</label>
+                    <input type="text" id="goalTime" value="3:30:00" pattern="[0-9]{1,2}:[0-9]{2}:[0-9]{2}" required>
+                </div>
+                
+                <div class="form-group">
+                    <label for="trainingDays">Training Days Per Week</label>
+                    <select id="trainingDays" required>
+                        <option value="3">3 days</option>
+                        <option value="4">4 days</option>
+                        <option value="5" selected>5 days</option>
+                        <option value="6">6 days</option>
+                        <option value="7">7 days</option>
+                    </select>
+                </div>
+                
+                <div class="form-group">
+                    <label>Preferred Training Days</label>
+                    <div class="day-selector">
+                        <div class="day-chip selected" data-day="monday">Monday</div>
+                        <div class="day-chip selected" data-day="tuesday">Tuesday</div>
+                        <div class="day-chip" data-day="wednesday">Wednesday</div>
+                        <div class="day-chip selected" data-day="thursday">Thursday</div>
+                        <div class="day-chip" data-day="friday">Friday</div>
+                        <div class="day-chip selected" data-day="saturday">Saturday</div>
+                        <div class="day-chip selected" data-day="sunday">Sunday</div>
+                    </div>
+                </div>
+                
+                <div class="form-group">
+                    <label for="additionalNotes">Additional Notes / Constraints</label>
+                    <textarea id="additionalNotes" rows="4">Tuesdays: Running track session at 6 pm always
+Thursdays: 8pm swim technique session.</textarea>
+                </div>
+                
+                <div class="button-group">
+                    <button type="button" class="btn-secondary" onclick="resetForm()">Reset</button>
+                    <button type="button" class="btn-primary" onclick="generateJSON()">Generate JSON</button>
+                    <button type="button" class="btn-primary" onclick="copyToClipboard()">Copy to Clipboard</button>
+                </div>
+            </form>
+            
+            <div id="output" style="display: none;">
+                <div class="alert alert-success" id="successMessage"></div>
+                <pre class="json-output" id="jsonOutput"></pre>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        // Calculate next Monday
+        function getNextMonday() {
+            const today = new Date();
+            const day = today.getDay();
+            const daysUntilMonday = day === 0 ? 1 : day === 1 ? 7 : 8 - day;
+            const nextMonday = new Date(today);
+            nextMonday.setDate(today.getDate() + daysUntilMonday);
+            return nextMonday.toISOString().split('T')[0];
+        }
+        
+        // Calculate training weeks
+        function calculateTrainingWeeks() {
+            const startDate = new Date(getNextMonday());
+            const eventDate = new Date(document.getElementById('eventDate').value);
+            const weeks = Math.floor((eventDate - startDate) / (7 * 24 * 60 * 60 * 1000));
+            return weeks;
+        }
+        
+        // Update info display
+        function updateInfo() {
+            const nextMonday = getNextMonday();
+            const weeks = calculateTrainingWeeks();
+            
+            document.getElementById('nextMonday').textContent = new Date(nextMonday).toLocaleDateString('en-US', {
+                weekday: 'long',
+                year: 'numeric',
+                month: 'long',
+                day: 'numeric'
+            });
+            
+            document.getElementById('trainingWeeks').textContent = `${weeks} weeks`;
+        }
+        
+        // Handle day chip clicks
+        document.querySelectorAll('.day-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                chip.classList.toggle('selected');
+            });
+        });
+        
+        // Event date change listener
+        document.getElementById('eventDate').addEventListener('change', updateInfo);
+        
+        // Generate JSON from form
+        function generateJSON() {
+            const selectedDays = Array.from(document.querySelectorAll('.day-chip.selected'))
+                .map(chip => chip.dataset.day);
+            
+            const config = {
+                eventName: document.getElementById('eventName').value,
+                eventDate: document.getElementById('eventDate').value,
+                eventDistance: document.getElementById('eventDistance').value,
+                goalTime: document.getElementById('goalTime').value,
+                startDate: "AUTO_NEXT_MONDAY",
+                trainingDaysPerWeek: parseInt(document.getElementById('trainingDays').value),
+                preferredTrainingDays: selectedDays,
+                additionalNotes: document.getElementById('additionalNotes').value
+            };
+            
+            const jsonString = JSON.stringify(config, null, 2);
+            document.getElementById('jsonOutput').textContent = jsonString;
+            document.getElementById('output').style.display = 'block';
+            document.getElementById('successMessage').textContent = '✅ JSON generated successfully!';
+            
+            return jsonString;
+        }
+        
+        // Copy to clipboard
+        async function copyToClipboard() {
+            const jsonString = generateJSON();
+            try {
+                await navigator.clipboard.writeText(jsonString);
+                document.getElementById('successMessage').textContent = '✅ Copied to clipboard!';
+            } catch (err) {
+                alert('Failed to copy to clipboard. Please copy manually.');
+            }
+        }
+        
+        // Reset form
+        function resetForm() {
+            document.getElementById('configForm').reset();
+            document.querySelectorAll('.day-chip').forEach(chip => {
+                const shouldBeSelected = ['monday', 'tuesday', 'thursday', 'saturday', 'sunday'].includes(chip.dataset.day);
+                chip.classList.toggle('selected', shouldBeSelected);
+            });
+            document.getElementById('output').style.display = 'none';
+            updateInfo();
+        }
+        
+        // Initialize
+        updateInfo();
+    </script>
+</body>
+</html>

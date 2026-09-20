@@ -1,0 +1,16 @@
+{
+  "eventName": "Berlin Marathon 2026",
+  "eventDate": "2026-09-27",
+  "eventDistance": "Marathon (42.195 km)",
+  "goalTime": "3:30:00",
+  "startDate": "AUTO_NEXT_MONDAY",
+  "trainingDaysPerWeek": 5,
+  "preferredTrainingDays": [
+    "monday",
+    "tuesday",
+    "thursday",
+    "saturday",
+    "sunday"
+  ],
+  "additionalNotes": "Tuesdays: Running track session at 6 pm always\nThursdays: 8pm swim technique session."
+}

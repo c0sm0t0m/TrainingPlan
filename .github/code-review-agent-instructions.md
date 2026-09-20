@@ -31,7 +31,7 @@ Before reviewing ANY code:
   - Verify formulas match Coggan/TrainingPeaks standards
   - Check `round()` vs `int()` usage (MUST use `round()` for zone boundaries)
   - Validate HR-based TSS when power unavailable
-  - Swimming TSS using pace/duration (sTSS = 100 × hours × IF²)
+  - Swimming TSS using pace/duration (sTSS = 100 × hours × IF³) - **CUBED not squared!**
   
 - [ ] **Training Zone Boundaries**
   - Zones must be continuous (Zone N+1 min = Zone N max + 1)

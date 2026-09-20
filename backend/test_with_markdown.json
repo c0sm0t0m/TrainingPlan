@@ -1,0 +1,23 @@
+```json
+{
+  "trainingPlan": {
+    "name": "Test Plan with Markdown",
+    "description": "This JSON is wrapped in markdown code fences",
+    "startDate": "2026-01-12",
+    "endDate": "2026-02-12",
+    "sportType": "running",
+    "targetEvent": "Test Event",
+    "workouts": [
+      {
+        "date": "2026-01-13",
+        "title": "Easy Run",
+        "description": "Test workout",
+        "sportType": "running",
+        "workoutType": "easy",
+        "durationMinutes": 30,
+        "targetTSS": 25
+      }
+    ]
+  }
+}
+```

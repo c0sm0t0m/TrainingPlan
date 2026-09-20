@@ -1,0 +1,373 @@
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🏃 AI TRAINING PLAN GENERATION PROMPT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+You are a professional endurance sports coach. Create a comprehensive, 
+periodized training plan based on the athlete data below.
+
+
+━━━ ATHLETE FITNESS DATA (Last 6 Weeks) ━━━
+  • Total volume: 439.2 km
+  • Total training time: 52.0 hours  
+  • Average weekly TSS: 429.8
+  • CTL (Fitness): 2578.9
+  • ATL (Fatigue): 429.8
+  • TSB (Form): 2149.1
+  • Activities: 43
+
+━━━ CURRENT THRESHOLDS ━━━
+  • Running threshold pace: 0.08 min/km
+  • Running threshold HR: 165 bpm
+  • Cycling FTP: 220 watts
+  • Max HR: 179 bpm
+  • Resting HR: 55 bpm
+
+━━━ TARGET EVENT ━━━
+  • Event: Erlanger Triathlon
+  • Date: 2026-07-26
+  • Distance: Olympische Distanz
+  • Goal time: 2:25
+
+━━━ PLAN REQUIREMENTS ━━━
+  • Start date: 2026-01-12
+  • End date: 2026-07-26
+  • Duration: 27 weeks
+  • Training days/week: 5
+  • Preferred days: tuesday, thursday, saturday, sunday, wednesday, friday
+
+━━━ ADDITIONAL NOTES ━━━
+- sometimes I play tennis on Monday/Wednesday. Include this 
+- tuesday is a good day for running intervals as I have track sessions from my Tri club
+- thursdays we have swimming technique training
+- Monday evening and Sat noon are other options for organized club swim.
+- I am struggling with strength training, get this into the plan in a clever way.
+- special focus where I want to improve is my bike performance - ensure that I have sufficient bike sessions! 
+
+
+━━━ TRAINER METHODOLOGY: BEN RESZEL ━━━
+
+Ben Reszel's Multi-Sport Performance Philosophy:
+        
+• BALANCED DEVELOPMENT: Equal focus on swim, bike, run - no weak links
+• TECHNICAL SWIMMING: Swimming technique is the biggest differentiator
+• SUSTAINABLE INTENSITY: High performance through smart training, not just volume
+• ATHLETE EMPOWERMENT: Teach athletes to understand their training
+• ADAPTABILITY: Training must adapt to athlete's response
+• RACE EXECUTION: Practice racing skills in training
+• PROGRESSIVE BUILD: Gradual, sustainable progression over seasons
+• RECOVERY INTEGRATION: Recovery is part of the training prescription
+• HOLISTIC APPROACH: Address all aspects of performance
+
+━━━ INTENSITY DISTRIBUTION ━━━
+  • Typical Week: Swim 20%, Bike 40%, Run 30%, Strength/Skills 10%
+  • Intensity Distribution: 70% Zone 1-2, 20% Zone 3-4, 10% Zone 5
+  • Base Phase: Higher volume, technical focus, build aerobic base
+  • Race Phase: Maintain volume, increase race-specific work
+
+━━━ KEY WORKOUT TYPES ━━━
+  1. Swim technique sessions - drills, video analysis, stroke efficiency
+  2. Bike threshold sets - 3-4x12min at FTP
+  3. Run tempo - 40-60min at half-marathon pace
+  4. Brick workouts - bike-to-run transition practice
+  5. Race-pace rehearsals - practice nutrition and pacing
+  6. Open water skills - drafting, sighting, navigation
+  7. Long aerobic sessions - 3-6 hours on bike, 90min-2.5hr run
+
+━━━ PERIODIZATION STRUCTURE ━━━
+  • Off Season: 4-6 weeks: Active recovery, fun training
+  • Base Phase: 10-14 weeks: Build volume, technical work
+  • Build Phase: 8-10 weeks: Add intensity, maintain volume
+  • Race Specific: 6-8 weeks: Sharpen fitness, practice execution
+  • Taper: 14-18 days: Reduce volume 40-50%, keep race pace
+
+━━━ RECOVERY STRATEGY ━━━
+  Strategic recovery weeks every 3-4 weeks. Monitor training stress and fatigue. Recovery sessions are prescribed, not optional. Sleep and nutrition non-negotiable.
+
+━━━ SPECIAL EMPHASIS ━━━
+  ⚠️  Swimming technique = free speed in races
+  ⚠️  Don't neglect the swim - it's your first impression
+  ⚠️  Balanced multi-sport athlete beats specialists
+  ⚠️  Practice transitions and race skills weekly
+  ⚠️  Understand WHY you're doing each workout
+  ⚠️  Training should be sustainable year-round
+  ⚠️  Race execution is a trainable skill
+  ⚠️  Recovery allows adaptation to happen
+  ⚠️  Progressive build over seasons, not weeks
+
+
+━━━ CUSTOM TRAINING INSTRUCTIONS ━━━
+- sometimes I play tennis on Monday/Wednesday. Include this 
+- tuesday is a good day for running intervals as I have track sessions from my Tri club
+- thursdays we have swimming technique training
+- Monday evening and Sat noon are other options for organized club swim.
+- I am struggling with strength training, get this into the plan in a clever way.
+- special focus where I want to improve is my bike performance - ensure that I have sufficient bike sessions! 
+
+
+
+⚠️  Apply these custom instructions IN ADDITION TO the trainer methodology above.
+
+━━━ DETAILED WORKOUT REQUIREMENTS ━━━
+
+⚠️  CRITICAL: Every workout MUST include comprehensive details!
+
+REQUIRED WORKOUT STRUCTURE:
+{{
+  "date": "YYYY-MM-DD",
+  "title": "Descriptive title (e.g., 'Threshold Intervals', 'Easy Recovery Run')",
+  "sportType": "running/cycling/swimming/strength/triathlon",
+  "workoutType": "easy/tempo/interval/long/recovery/race",
+  "durationMinutes": <number>,
+  "targetTSS": <number>,
+  "intensityZone": "zone1/zone2/zone3/zone4/zone5",
+  "description": "COMPREHENSIVE workout description (see below)"
+}}
+
+━━━ WORKOUT DESCRIPTION FORMAT ━━━
+
+The "description" field MUST be detailed and include:
+
+1. WARMUP (always include):
+   - Duration and intensity
+   - Example: "10min easy warmup in Zone 1"
+
+2. MAIN WORK (be specific):
+   For INTERVALS:
+   - Number of repetitions
+   - Duration of each interval
+   - Target pace/power/HR zone
+   - Recovery duration and type
+   - Example: "5x1000m at threshold pace (Zone 4) with 2min easy jog recovery"
+   
+   For TEMPO:
+   - Duration at tempo effort
+   - Target pace/power/HR range
+   - Example: "20min continuous tempo effort at Zone 3 (half-marathon pace)"
+   
+   For LONG RUNS:
+   - Total duration/distance
+   - Any pace variations
+   - Example: "90min easy run in Zone 2, last 15min at marathon pace"
+   
+   For EASY/RECOVERY:
+   - Emphasis on easy effort
+   - Example: "45min easy recovery run, Zone 1-2, conversational pace"
+
+3. COOLDOWN (always include):
+   - Duration and intensity
+   - Example: "10min easy cooldown in Zone 1"
+
+4. ADDITIONAL NOTES (when relevant):
+   - Specific focus (form, cadence, nutrition)
+   - Special instructions
+   - Example: "Focus on maintaining cadence >170spm. Practice race nutrition."
+
+━━━ COMPLETE WORKOUT EXAMPLES ━━━
+
+Example 1 - Interval Workout:
+{{
+  "title": "VO2max Intervals",
+  "description": "Warmup: 15min easy running in Zone 1-2 with 3x100m strides. Main: 6x800m at VO2max pace (Zone 5, ~5K race pace) with 400m easy jog recovery between intervals. Focus on maintaining consistent pace across all intervals. Cooldown: 10min easy running in Zone 1. Total: 60min"
+}}
+
+Example 2 - Long Run:
+{{
+  "title": "Progressive Long Run",
+  "description": "90min long run starting in Zone 2. Run first 60min at comfortable aerobic pace, then increase to marathon pace (Zone 3) for 20min, finish with 10min easy cooldown in Zone 1. Practice race-day nutrition (gel at 45min and 75min). Focus on maintaining form as fatigue sets in."
+}}
+
+Example 3 - Tempo Run:
+{{
+  "title": "Sustained Tempo",
+  "description": "Warmup: 10min easy running in Zone 1. Main: 30min continuous tempo effort at Zone 3 (half-marathon pace, comfortably hard). Focus on relaxed form and controlled breathing. Cooldown: 10min easy in Zone 1 with light stretching. Total: 50min"
+}}
+
+Example 4 - Easy Recovery:
+{{
+  "title": "Easy Recovery Run",
+  "description": "45min easy recovery run at Zone 1-2. Pace should feel comfortable and conversational. If HR rises above Zone 2, slow down. This is active recovery - do NOT push pace. Focus on relaxed form and enjoying the run."
+}}
+
+━━━ TAPER PHASE WORKOUTS ━━━
+
+Taper workouts MUST:
+- Reduce volume by 50-70%
+- Maintain intensity in short bursts
+- Include race-pace efforts
+- Example: "30min easy run with 3x5min at race pace, 2min recovery between"
+
+━━━ BRICK WORKOUTS (Triathlon) ━━━
+
+Brick workouts MUST specify:
+- Bike duration and intensity
+- Transition
+- Run duration and intensity
+- Example: "90min bike at Zone 2-3, quick transition (practice race setup), 30min run starting at Zone 3 (expect heavy legs first 10min)"
+
+━━━ RACE-SPECIFIC WORKOUTS ━━━
+
+Race simulation workouts MUST:
+- Mimic race conditions (time of day, terrain, weather considerations)
+- Practice pacing strategy
+- Test race nutrition
+- Example: "20K run: First 5K at easy pace, then 10K at goal marathon pace, final 5K push to half-marathon pace. Practice fueling: gel at 30min and 60min."
+
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📋 JSON OUTPUT FORMAT - CRITICAL!
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+🚨 CRITICAL INSTRUCTION: PRODUCE A DOWNLOADABLE JSON FILE! 🚨
+
+Your response will be SAVED AS A .JSON FILE by the user.
+This means your output must be 100% VALID, PURE JSON.
+
+⚠️  YOUR ENTIRE RESPONSE = THE CONTENTS OF THE .JSON FILE
+
+✅ CORRECT OUTPUT (DOWNLOADABLE JSON):
+   • First character: {{
+   • Last character: }}
+   • NOTHING ELSE - no explanations, no markdown, no commentary
+
+❌ WRONG OUTPUT (NOT DOWNLOADABLE):
+   • Starting with "Here's the JSON:" ❌
+   • Wrapping in ```json or ``` markdown ❌
+   • Adding explanations before/after ❌
+   • Outputting just the workouts array ❌
+   • Including comments or notes ❌
+
+━━━ HOW TO FORMAT YOUR RESPONSE ━━━
+
+Imagine the user will click "Download" on your response.
+The file must open correctly in a JSON viewer.
+
+✅ First line MUST be: {{ "trainingPlan": {{
+✅ Last line MUST be: }} }}
+✅ NO text before the opening {{
+✅ NO text after the closing }}
+
+REQUIRED JSON STRUCTURE:
+
+{{
+  "trainingPlan": {{
+    "name": "YOUR PLAN NAME HERE",
+    "description": "YOUR PLAN DESCRIPTION HERE",
+    "startDate": "{plan_config['start_date']}",
+    "endDate": "{plan_config['end_date']}",
+    "sportType": "triathlon",
+    "targetEvent": "{event_details['name']}",
+    "workouts": [
+      {{
+        "date": "YYYY-MM-DD",
+        "title": "Workout Title",
+        "description": "Detailed workout description with warmup/intervals/cooldown",
+        "sportType": "running",
+        "workoutType": "easy",
+        "durationMinutes": 45,
+        "intensityZone": "zone2",
+        "targetTSS": 40,
+        "distanceKm": 7.5
+      }},
+      {{
+        "date": "YYYY-MM-DD",
+        "title": "Bike Threshold Intervals",
+        "description": "Warmup: 15min easy spinning\nMain: 3x12min at FTP with 5min recovery\nCooldown: 10min easy",
+        "sportType": "cycling",
+        "workoutType": "interval",
+        "durationMinutes": 90,
+        "intensityZone": "zone4",
+        "targetTSS": 75,
+        "distanceKm": 35
+      }}
+    ]
+  }}
+}}
+
+━━━ FIELD REFERENCE ━━━
+
+Plan metadata (ALL REQUIRED):
+  • name: descriptive plan name (e.g., "16-Week Marathon Build")
+  • description: 2-3 sentence overview of plan approach
+  • startDate: "{plan_config['start_date']}" (YYYY-MM-DD format)
+  • endDate: "{plan_config['end_date']}" (YYYY-MM-DD format)
+  • sportType: "triathlon" OR "running" OR "cycling" OR "swimming"
+  • targetEvent: "{event_details['name']}"
+  • workouts: [array of workout objects]
+
+Each workout object (REQUIRED FIELDS):
+  • date: "YYYY-MM-DD" (must be between start and end dates)
+  • title: short workout name (e.g., "Long Run with MP Finish")
+  • sportType: "running" / "cycling" / "swimming" / "strength" / "triathlon"
+  • workoutType: "easy" / "tempo" / "interval" / "long" / "recovery" / "race"
+  • durationMinutes: integer (total workout time)
+  • targetTSS: integer (Training Stress Score - lowercase 'ss'!)
+
+Each workout object (OPTIONAL BUT RECOMMENDED):
+  • description: detailed instructions (warmup, main set, cooldown, notes)
+  • distanceKm: float (planned distance in kilometers)
+  • intensityZone: "zone1" / "zone2" / "zone3" / "zone4" / "zone5"
+
+━━━ CRITICAL DATA TYPE RULES ━━━
+
+✅ CORRECT:
+  "durationMinutes": 60      ← number (no quotes)
+  "targetTSS": 45            ← number (no quotes)
+  "distanceKm": 10.5         ← number (no quotes)
+  "date": "2024-01-15"       ← string (with quotes)
+
+❌ WRONG:
+  "durationMinutes": "60"    ← string (has quotes) - BREAKS IMPORT!
+  "targetTSS": "45"          ← string (has quotes) - BREAKS IMPORT!
+
+━━━ WORKOUT DISTRIBUTION RULES ━━━
+
+✅ Plan MUST include:
+  • ALL {plan_config['duration_weeks']} weeks (no gaps)
+  • {plan_config['training_days_per_week']} workouts per week
+  • Workouts on preferred days: {', '.join(plan_config['preferred_training_days'])}
+  • Progressive build with periodization phases
+  • Explicit taper phase (final 2-3 weeks before race)
+  • Recovery weeks every 3-4 weeks
+
+✅ Workout descriptions MUST include:
+  • Warmup details (duration, intensity)
+  • Main workout specifics (e.g., "5x1000m at threshold pace with 400m jog recovery")
+  • Cooldown details (duration, intensity)
+  • Notes (e.g., "Focus on negative splits", "Practice race nutrition")
+
+━━━ VALIDATION CHECKLIST ━━━
+
+Before submitting, verify:
+  ✅ First character is: {{
+  ✅ Last character is: }}
+  ✅ NO markdown fences (```)
+  ✅ NO explanatory text before/after JSON
+  ✅ ALL dates in YYYY-MM-DD format
+  ✅ ALL numeric fields are numbers (not strings)
+  ✅ NO trailing commas
+  ✅ All {plan_config['duration_weeks']} weeks have workouts
+  ✅ Workouts progress logically (base → build → peak → taper)
+  ✅ Each workout has detailed description
+  ✅ Taper phase explicitly included
+
+━━━ EXAMPLE OF WHAT USER WILL DO ━━━
+
+1. User copies your ENTIRE response
+2. User saves as "training_plan.json"
+3. User uploads to Kinesis platform
+4. System parses JSON and creates workouts
+
+If your JSON is malformed, the import FAILS.
+If you add text before/after JSON, the import FAILS.
+If you use wrong data types, the import FAILS.
+
+🎯 YOUR MISSION: Produce a PERFECT, DOWNLOADABLE JSON FILE!
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Generate the complete training plan now.
+
+🚨 REMINDER: Your response IS the .json file contents!
+    First character: {{
+    Last character: }}
+    NOTHING ELSE!
