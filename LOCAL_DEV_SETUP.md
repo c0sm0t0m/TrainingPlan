@@ -1,6 +1,6 @@
 # Fast-Track Local Development Setup
 
-Get TrainingPlan running in 5 minutes without Docker. Start simple, extend iteratively.
+Get Kinesis running in 5 minutes without Docker. Start simple, extend iteratively.
 
 ## Quick Start (No Docker Required)
 

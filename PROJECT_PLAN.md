@@ -1,4 +1,4 @@
-# TrainingPlan - Detailed Project Plan
+# Kinesis - Detailed Project Plan
 
 ## Executive Summary
 Build a self-hosted triathlon training management platform that rivals commercial solutions like TrainingPeaks, providing personalized training plans, multi-platform integrations, and comprehensive analytics - all running on your QNAP NAS.

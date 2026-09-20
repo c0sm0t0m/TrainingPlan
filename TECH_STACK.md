@@ -1,7 +1,9 @@
-# TrainingPlan - Technology Stack Documentation
+# Kinesis - Technology Stack Documentation
 
 ## Overview
-This document details the complete technology stack for the TrainingPlan application, including rationale for each choice and alternatives considered.
+This document details the complete technology stack for the Kinesis application, including rationale for each choice and alternatives considered.
+
+**Kinesis** (κίνησις): From Greek philosophy - the process of movement and actualization. Transform your training potential into kinetic performance.
 
 ## Architecture Pattern
 **Microservices-lite with API Gateway**

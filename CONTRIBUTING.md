@@ -1,6 +1,6 @@
-# Contributing to TrainingPlan
+# Contributing to Kinesis
 
-Thank you for your interest in contributing to TrainingPlan! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to Kinesis! This document provides guidelines and instructions for contributing.
 
 ## Development Setup
 

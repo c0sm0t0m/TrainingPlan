@@ -3,7 +3,10 @@
 **Last Updated**: January 3, 2026  
 **Research Period**: December 2025 - January 2026  
 **Status**: Active Research & Implementation
-
+cd /Users/boetthw3/Documents/99_Other/TrainingPlan
+git remote set-url origin https://YOUR_TOKEN@github.com/c0sm0t0m/TrainingPlan.git
+git push -u origin main
+git remote set-url origin https://github.com/c0sm0t0m/TrainingPlan.git  # Remove token from URL after
 ---
 
 ## 📚 Table of Contents
