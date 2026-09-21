@@ -23,6 +23,14 @@ router = APIRouter(prefix="/garmin", tags=["garmin"])
 
 
 # Pydantic schemas
+class SyncActivitiesRequest(BaseModel):
+    """Bulk activity sync from Garmin Connect."""
+    days: int = 730
+    # When False (default): summary/metadata only — fast, suitable for long ranges.
+    # When True: also fetch splits + FIT time series (slow; use for short ranges).
+    include_details: bool = False
+
+
 class GarminConnectRequest(BaseModel):
     """Request to connect Garmin account."""
     email: EmailStr
@@ -169,24 +177,19 @@ async def get_garmin_status(
 
 @router.post("/sync-activities", response_model=dict)
 async def sync_garmin_activities(
+    payload: SyncActivitiesRequest,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    days: int = Body(730, embed=True)  # Default 2 years (730 days)
 ):
     """
     Manually trigger sync of completed Garmin activities (past workouts).
-    
-    Args:
-        current_user: Current authenticated user
-        db: Database session
-        days: Number of days to sync (default 730 = 2 years)
-        
-    Returns:
-        Sync summary
-        
-    Raises:
-        HTTPException: If not connected or sync fails
+
+    Default is metadata-only (fast). Set include_details=true to download
+    splits/FIT per activity (slow; prefer short day ranges).
     """
+    days = payload.days
+    include_details = payload.include_details
+
     if not current_user.garmin_connected:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -208,12 +211,18 @@ async def sync_garmin_activities(
         
         # Get activities from Garmin
         start_date = datetime.utcnow() - timedelta(days=days) if days else None
+        mode = "details" if include_details else "metadata"
+        print(
+            f"🔄 Activity sync: last {days} days, mode={mode}",
+            flush=True,
+        )
         activities = await garmin_service.get_activities(
             current_user.garmin_oauth1_token,
             current_user.garmin_oauth2_token,
             start_date=start_date,
             limit=50
         )
+        print(f"   Garmin returned {len(activities)} activities", flush=True)
         
         # Import GarminActivity model and TSS calculator
         from src.models.garmin_activity import GarminActivity
@@ -225,6 +234,8 @@ async def sync_garmin_activities(
         updated_count = 0
         failed_count = 0
         errors = []
+        processed = 0
+        checkpoint_every = 25
         
         for activity in activities:
             try:
@@ -357,50 +368,43 @@ async def sync_garmin_activities(
                     if existing_splits:
                         activity_data["raw_data"]["splits"] = existing_splits
                 
-                # Fetch lap/split data from Garmin API (only if not cached)
-                if not existing_splits:
-                    try:
-                        # Resume Garmin API session
-                        api = await garmin_service.resume_session(
-                            current_user.garmin_oauth1_token,
-                            current_user.garmin_oauth2_token
-                        )
-                        
-                        # Get splits/laps data
-                        splits_data = api.get_activity_splits(garmin_id)
-                        
-                        if isinstance(splits_data, dict) and 'lapDTOs' in splits_data:
-                            # Store only the lap data we need for analytics
-                            activity_data["raw_data"]["splits"] = splits_data['lapDTOs']
-                            existing_splits = splits_data['lapDTOs']
-                            print(f"  ✓ Fetched {len(splits_data['lapDTOs'])} laps")
-                    except Exception as e:
-                        print(f"  ⚠️  Failed to fetch splits: {str(e)}")
+                # Expensive per-activity Garmin calls only when explicitly requested
+                if include_details:
+                    # Fetch lap/split data from Garmin API (only if not cached)
+                    if not existing_splits:
+                        try:
+                            api = await garmin_service.resume_session(
+                                current_user.garmin_oauth1_token,
+                                current_user.garmin_oauth2_token
+                            )
+                            splits_data = api.get_activity_splits(garmin_id)
+                            
+                            if isinstance(splits_data, dict) and 'lapDTOs' in splits_data:
+                                activity_data["raw_data"]["splits"] = splits_data['lapDTOs']
+                                existing_splits = splits_data['lapDTOs']
+                                print(f"  ✓ Fetched {len(splits_data['lapDTOs'])} laps")
+                        except Exception as e:
+                            print(f"  ⚠️  Failed to fetch splits: {str(e)}")
+                    
+                    # Download and parse FIT file for time series data (only if not cached)
+                    if not existing_time_series and (activity.get("hasPolyline") or activity.get("averageHR")):
+                        try:
+                            fit_data = await garmin_service.download_activity_fit(
+                                current_user.garmin_oauth1_token,
+                                current_user.garmin_oauth2_token,
+                                int(garmin_id)
+                            )
+                            time_series_result = parse_fit_time_series(fit_data)
+                            
+                            if "error" not in time_series_result:
+                                activity_data["raw_data"]["time_series"] = time_series_result
+                                existing_time_series = time_series_result
+                            else:
+                                print(f"  ⚠️  Time series parse failed: {time_series_result['error']}")
+                        except Exception as e:
+                            print(f"  ⚠️  Failed to download/parse FIT file: {str(e)}")
                 
-                # Download and parse FIT file for time series data (only if not cached)
-                # Only do this for activities with GPS/HR data to avoid unnecessary downloads
-                if not existing_time_series and (activity.get("hasPolyline") or activity.get("averageHR")):
-                    try:
-                        fit_data = await garmin_service.download_activity_fit(
-                            current_user.garmin_oauth1_token,
-                            current_user.garmin_oauth2_token,
-                            int(garmin_id)
-                        )
-                        
-                        # Parse time series data
-                        time_series_result = parse_fit_time_series(fit_data)
-                        
-                        if "error" not in time_series_result:
-                            # Add time series to raw_data
-                            activity_data["raw_data"]["time_series"] = time_series_result
-                            existing_time_series = time_series_result
-                        else:
-                            print(f"  ⚠️  Time series parse failed: {time_series_result['error']}")
-                    except Exception as e:
-                        # Don't fail the entire sync if FIT download fails
-                        print(f"  ⚠️  Failed to download/parse FIT file: {str(e)}")
-                
-                # Calculate TSS from time series (using cached or newly downloaded data)
+                # Calculate TSS from time series (cached or newly downloaded)
                 if existing_time_series:
                     try:
                         time_series_tss = calculate_tss_from_time_series(
@@ -410,12 +414,11 @@ async def sync_garmin_activities(
                         )
                         
                         if time_series_tss is not None:
-                            # Use time series TSS (more accurate)
                             calculated_tss = time_series_tss
-                            summary = get_time_series_tss_summary(existing_time_series, time_series_tss)
-                            print(f"  ✅ {summary}")
-                        else:
-                            # Fall back to summary-based TSS
+                            if include_details:
+                                summary = get_time_series_tss_summary(existing_time_series, time_series_tss)
+                                print(f"  ✅ {summary}")
+                        elif include_details:
                             summary = get_time_series_summary(existing_time_series)
                             print(f"  ✅ Time series: {summary} (TSS from summary)")
                     except Exception as e:
@@ -436,6 +439,15 @@ async def sync_garmin_activities(
                     new_activity = GarminActivity(**activity_data)
                     db.add(new_activity)
                     new_count += 1
+
+                processed += 1
+                if processed % checkpoint_every == 0:
+                    await db.commit()
+                    print(
+                        f"  💾 Checkpoint {processed}/{len(activities)} "
+                        f"(+{new_count} new, ~{updated_count} updated)",
+                        flush=True,
+                    )
             except Exception as e:
                 failed_count += 1
                 error_msg = f"Activity {activity.get('activityId')}: {str(e)}"
@@ -446,13 +458,21 @@ async def sync_garmin_activities(
         # Update last sync time
         current_user.garmin_last_sync = datetime.utcnow()
         await db.commit()
+        print(
+            f"✅ Activity sync done: {len(activities)} found, "
+            f"{new_count} new, {updated_count} updated, {failed_count} failed "
+            f"(mode={mode})",
+            flush=True,
+        )
         
         response = {
             "message": f"Synced {len(activities)} activities: {new_count} new, {updated_count} updated, {failed_count} failed",
             "activities_found": len(activities),
             "new_activities": new_count,
             "updated_activities": updated_count,
-            "failed_activities": failed_count
+            "failed_activities": failed_count,
+            "include_details": include_details,
+            "mode": mode,
         }
         
         if errors:

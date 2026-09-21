@@ -170,7 +170,9 @@ export default function Dashboard() {
           if (shouldSync) {
             // Sync activities and health data in parallel with adaptive days
             await Promise.all([
-              api.post('/garmin/sync-activities', { days: syncDays }),
+              api.post('/garmin/sync-activities', { days: syncDays, include_details: false }, {
+                timeout: Math.min(180000, Math.max(60000, syncDays * 5000)),
+              }),
               api.post('/garmin/sync-health-data', { days: syncDays }).catch(err => {
                 console.log('Health data sync skipped:', err)
               })

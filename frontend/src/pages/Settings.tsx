@@ -147,10 +147,12 @@ const Settings: React.FC = () => {
       setSyncing(true)
       setError(null)
       
-      // Use longer timeout for sync (can take 60+ seconds for 2 years of data)
-      const response = await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
-        timeout: 120000, // 2 minutes
-      })
+      // Metadata-only by default (FIT/splits are slow; use short ranges if enriching later)
+      const response = await apiClient.post(
+        '/garmin/sync-activities',
+        { days: syncDays, include_details: false },
+        { timeout: Math.min(300000, Math.max(90000, syncDays * 400)) },
+      )
       
       setSuccess(response.data.message)
       await fetchGarminStatus()
@@ -191,10 +193,12 @@ const Settings: React.FC = () => {
       setError(null)
       setMobileMenuAnchor(null) // Close menu
       
-      // Sync activities first
-      await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
-        timeout: 120000,
-      })
+      // Sync activities first (metadata-only for speed)
+      await apiClient.post(
+        '/garmin/sync-activities',
+        { days: syncDays, include_details: false },
+        { timeout: Math.min(300000, Math.max(90000, syncDays * 400)) },
+      )
       
       // Then sync workouts
       const response = await apiClient.post('/garmin/sync-workouts', {

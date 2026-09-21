@@ -521,6 +521,9 @@ const SettingsNew: React.FC = () => {
   };
 
   const handleSyncActivities = async () => {
+    let timerInterval: ReturnType<typeof setInterval> | undefined
+    let pollInterval: ReturnType<typeof setInterval> | undefined
+
     try {
       setSyncing(true);
       setError(null);
@@ -536,11 +539,12 @@ const SettingsNew: React.FC = () => {
       setSyncEndDate(endDate.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' }));
       
       // Get initial activity count
+      let startingCount = 0
       try {
         const statsResponse = await apiClient.get('/garmin/activities/stats');
-        const initialCount = statsResponse.data.total_activities || 0;
-        setInitialActivityCount(initialCount);
-        setSyncActivityCount(initialCount);
+        startingCount = statsResponse.data.total_activities || 0;
+        setInitialActivityCount(startingCount);
+        setSyncActivityCount(startingCount);
       } catch (e) {
         setInitialActivityCount(0);
         setSyncActivityCount(0);
@@ -548,66 +552,70 @@ const SettingsNew: React.FC = () => {
       
       // Start elapsed time counter
       const startTime = Date.now();
-      const timerInterval = setInterval(() => {
+      timerInterval = setInterval(() => {
         setSyncElapsedTime(Math.floor((Date.now() - startTime) / 1000));
       }, 1000);
       
-      // Track activities per second for progress estimation
-      let lastActivityCount = initialActivityCount;
-      let lastCheckTime = Date.now();
-      const estimatedActivitiesPerDay = syncDays > 365 ? 1.5 : 2; // Conservative estimate
-      const estimatedTotalActivities = syncDays * estimatedActivitiesPerDay;
+      // Metadata-only sync is fast; details mode is intentionally not used for bulk ranges.
+      const includeDetails = false
+      const estimatedActivitiesPerDay = syncDays > 365 ? 1.5 : 2;
+      const estimatedTotalActivities = Math.max(1, syncDays * estimatedActivitiesPerDay);
       
-      // Start activity count polling
-      const pollInterval = setInterval(async () => {
+      // Start activity count polling (batch commits make this meaningful)
+      pollInterval = setInterval(async () => {
         try {
           const statsResponse = await apiClient.get('/garmin/activities/stats');
           const currentCount = statsResponse.data.total_activities || 0;
           setSyncActivityCount(currentCount);
           
-          // Estimate progress based on activity growth
-          const newActivities = currentCount - initialActivityCount;
+          const newActivities = currentCount - startingCount;
           if (newActivities > 0) {
             const progress = Math.min(95, (newActivities / estimatedTotalActivities) * 100);
             setSyncProgress(progress);
           } else {
-            // If no activities yet, show minimal progress based on time
-            const timeProgress = Math.min(30, (Date.now() - startTime) / 2000);
+            const timeProgress = Math.min(40, (Date.now() - startTime) / 3000);
             setSyncProgress(timeProgress);
           }
-          
-          lastActivityCount = currentCount;
-          lastCheckTime = Date.now();
         } catch (e) {
           // Ignore polling errors
         }
-      }, 3000); // Poll every 3 seconds
+      }, 3000);
       
-      // Use longer timeout for sync (can take 60+ seconds for 2 years of data)
-      await apiClient.post('/garmin/sync-activities', { days: syncDays }, {
-        timeout: 120000, // 2 minutes
-      });
-      
-      // Clean up intervals
-      clearInterval(timerInterval);
-      clearInterval(pollInterval);
+      // Metadata sync: allow up to 5 min for large Garmin list fetches
+      const timeoutMs = Math.min(300000, Math.max(90000, syncDays * 400));
+      const response = await apiClient.post(
+        '/garmin/sync-activities',
+        { days: syncDays, include_details: includeDetails },
+        { timeout: timeoutMs },
+      );
       
       // Final activity count and 100% progress
       const finalStatsResponse = await apiClient.get('/garmin/activities/stats');
       setSyncActivityCount(finalStatsResponse.data.total_activities || 0);
       setSyncProgress(100);
       
-      setSuccess(`Successfully synced activities from last ${syncDays} days!`);
+      const { new_activities, updated_activities, activities_found, mode } = response.data;
+      setSuccess(
+        `Synced ${activities_found ?? syncDays} activities (${new_activities ?? 0} new, ${updated_activities ?? 0} updated, mode=${mode ?? 'metadata'})`
+      );
       await fetchSettings();
       
-      // Close progress dialog after a short delay to show final count
       setTimeout(() => {
         setSyncProgressOpen(false);
       }, 2000);
     } catch (err: any) {
       setSyncProgressOpen(false);
-      setError(err.response?.data?.detail || 'Failed to sync activities');
+      const isTimeout = err?.code === 'ECONNABORTED' || /timeout/i.test(err?.message || '');
+      if (isTimeout) {
+        setError(
+          'Request timed out — the server may still be syncing. Wait a minute, refresh, or check the backend console.'
+        );
+      } else {
+        setError(err.response?.data?.detail || 'Failed to sync activities');
+      }
     } finally {
+      if (timerInterval) clearInterval(timerInterval);
+      if (pollInterval) clearInterval(pollInterval);
       setSyncing(false);
     }
   };
