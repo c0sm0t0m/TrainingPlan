@@ -31,6 +31,12 @@ import {
   IconButton,
   ListItemIcon,
   ListItemText,
+  FormControlLabel,
+  Checkbox,
+  Accordion,
+  AccordionSummary,
+  AccordionDetails,
+  Stack,
 } from '@mui/material';
 import {
   Link as LinkIcon,
@@ -48,14 +54,29 @@ import {
   Settings as SettingsIcon,
   MoreVert as MoreVertIcon,
   FitnessCenter as FitnessCenterIcon,
+  ExpandMore as ExpandMoreIcon,
+  LibraryBooks as LibraryIcon,
 } from '@mui/icons-material';
 import apiClient from '../services/api';
 import FeatureFlagsPanel from '../components/FeatureFlagsPanel';
 import Breadcrumbs from '../components/Breadcrumbs';
+import {
+  getLibraryPreferences,
+  listWorkoutTemplates,
+  updateLibraryPreferences,
+  WorkoutTemplateSummary,
+} from '../services/workoutLibrary';
 
 interface GarminStatus {
   connected: boolean;
   email: string | null;
+  last_sync: string | null;
+}
+
+interface IcuStatus {
+  connected: boolean;
+  athlete_id: string | null;
+  athlete_name: string | null;
   last_sync: string | null;
 }
 
@@ -104,6 +125,7 @@ const SettingsNew: React.FC = () => {
   const isMobile = useMediaQuery('(max-width:900px)');
   const [tabValue, setTabValue] = useState(0);
   const [garminStatus, setGarminStatus] = useState<GarminStatus | null>(null);
+  const [icuStatus, setIcuStatus] = useState<IcuStatus | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [thresholds, setThresholds] = useState<UserThresholds>({
     ftp: null,
@@ -148,15 +170,27 @@ const SettingsNew: React.FC = () => {
   const [saving, setSaving] = useState(false);
   const [syncDays, setSyncDays] = useState(30);
   const [connecting, setConnecting] = useState(false);
+  const [icuConnecting, setIcuConnecting] = useState(false);
   const [syncing, setSyncing] = useState(false);
+  const [icuSyncing, setIcuSyncing] = useState(false);
   const [healthSyncing, setHealthSyncing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   
   // Connect dialog state
   const [connectDialogOpen, setConnectDialogOpen] = useState(false);
+  const [icuConnectDialogOpen, setIcuConnectDialogOpen] = useState(false);
   const [garminEmail, setGarminEmail] = useState('');
   const [garminPassword, setGarminPassword] = useState('');
+  const [icuApiKey, setIcuApiKey] = useState('');
+  const [icuDaysAhead, setIcuDaysAhead] = useState(14);
+
+  // Workout library (Calendar add picker)
+  const [libraryTemplates, setLibraryTemplates] = useState<WorkoutTemplateSummary[]>([]);
+  const [libraryEnabledIds, setLibraryEnabledIds] = useState<Set<string>>(new Set());
+  const [libraryUsingDefaults, setLibraryUsingDefaults] = useState(true);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySaving, setLibrarySaving] = useState(false);
   
   // Sync progress state
   const [syncProgressOpen, setSyncProgressOpen] = useState(false);
@@ -219,9 +253,13 @@ const SettingsNew: React.FC = () => {
     try {
       setLoading(true);
       
-      // Fetch Garmin status
-      const garminResponse = await apiClient.get('/garmin/status');
+      // Fetch Garmin + ICU status
+      const [garminResponse, icuResponse] = await Promise.all([
+        apiClient.get('/garmin/status'),
+        apiClient.get('/icu/status').catch(() => ({ data: { connected: false, athlete_id: null, athlete_name: null, last_sync: null } })),
+      ]);
       setGarminStatus(garminResponse.data);
+      setIcuStatus(icuResponse.data);
       
       // Fetch user thresholds
       const thresholdsResponse = await apiClient.get('/auth/me');
@@ -241,10 +279,67 @@ const SettingsNew: React.FC = () => {
       // Initialize pace text fields
       setRunPaceText(secondsToPace(userData.threshold_pace));
       setSwimPaceText(secondsToPace(userData.swim_threshold_pace));
+
+      // Workout library preferences
+      try {
+        setLibraryLoading(true);
+        const [templates, prefs] = await Promise.all([
+          listWorkoutTemplates(),
+          getLibraryPreferences(),
+        ]);
+        setLibraryTemplates(templates);
+        const ids =
+          prefs.enabled_ids ??
+          prefs.default_ids ??
+          [];
+        setLibraryEnabledIds(new Set(ids));
+        setLibraryUsingDefaults(prefs.using_defaults);
+      } catch {
+        // non-fatal
+      } finally {
+        setLibraryLoading(false);
+      }
     } catch (err: any) {
       setError('Failed to load settings');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const toggleLibraryTemplate = (id: string) => {
+    setLibraryEnabledIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+    setLibraryUsingDefaults(false);
+  };
+
+  const selectAllLibrary = () => {
+    setLibraryEnabledIds(new Set(libraryTemplates.map((t) => t.id)));
+    setLibraryUsingDefaults(false);
+  };
+
+  const clearLibrary = () => {
+    setLibraryEnabledIds(new Set());
+    setLibraryUsingDefaults(false);
+  };
+
+  const handleSaveLibraryPreferences = async () => {
+    try {
+      setLibrarySaving(true);
+      setError(null);
+      const prefs = await updateLibraryPreferences(Array.from(libraryEnabledIds));
+      setLibraryUsingDefaults(prefs.using_defaults);
+      setSuccess(
+        `Workout library updated — ${libraryEnabledIds.size} templates in Calendar add`
+      );
+      setTimeout(() => setSuccess(null), 3000);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to save workout library');
+    } finally {
+      setLibrarySaving(false);
     }
   };
 
@@ -496,6 +591,63 @@ const SettingsNew: React.FC = () => {
       setError('Failed to disconnect from Garmin');
     } finally {
       setConnecting(false);
+    }
+  };
+
+  const handleConnectIcu = async () => {
+    if (!icuApiKey.trim()) {
+      setError('Please enter your Intervals.icu API key');
+      return;
+    }
+    try {
+      setIcuConnecting(true);
+      setError(null);
+      await apiClient.post('/icu/connect', { api_key: icuApiKey.trim() });
+      setSuccess('Successfully connected to Intervals.icu!');
+      setIcuConnectDialogOpen(false);
+      setIcuApiKey('');
+      await fetchSettings();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to connect to Intervals.icu');
+    } finally {
+      setIcuConnecting(false);
+    }
+  };
+
+  const handleDisconnectIcu = async () => {
+    try {
+      setIcuConnecting(true);
+      setError(null);
+      await apiClient.delete('/icu/disconnect');
+      setSuccess('Disconnected from Intervals.icu');
+      await fetchSettings();
+    } catch (err: any) {
+      setError('Failed to disconnect from Intervals.icu');
+    } finally {
+      setIcuConnecting(false);
+    }
+  };
+
+  const handleSyncIcuWorkouts = async () => {
+    try {
+      setIcuSyncing(true);
+      setError(null);
+      const response = await apiClient.post(
+        '/icu/sync-workouts',
+        { days_ahead: icuDaysAhead },
+        { timeout: 120000 },
+      );
+      const { synced, total, plan_name, message } = response.data;
+      setSuccess(
+        message ||
+          `Pushed ${synced ?? 0}/${total ?? 0} workouts to Intervals.icu` +
+            (plan_name ? ` (${plan_name})` : '')
+      );
+      await fetchSettings();
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to sync workouts to Intervals.icu');
+    } finally {
+      setIcuSyncing(false);
     }
   };
 
@@ -1241,6 +1393,211 @@ const SettingsNew: React.FC = () => {
                 )}
               </CardActions>
             </Card>
+
+            {/* Bike workout library */}
+            <Card sx={{ mt: 3 }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', mb: 1 }}>
+                  <LibraryIcon sx={{ fontSize: 40, mr: 2, color: 'primary.main' }} />
+                  <Box sx={{ flex: 1 }}>
+                    <Typography variant="h6">Workout library</Typography>
+                    <Typography variant="body2" color="text.secondary">
+                      Choose structured bike workouts available in Calendar → Bike library (ERG)
+                    </Typography>
+                  </Box>
+                  <Chip
+                    size="small"
+                    label={`${libraryEnabledIds.size} / ${libraryTemplates.length} selected`}
+                    color={libraryEnabledIds.size > 0 ? 'primary' : 'default'}
+                  />
+                </Box>
+                {libraryUsingDefaults && (
+                  <Alert severity="info" sx={{ mb: 2 }}>
+                    Showing starter defaults until you save a custom selection.
+                  </Alert>
+                )}
+                <Stack direction="row" spacing={1} sx={{ mb: 2 }} flexWrap="wrap" useFlexGap>
+                  <Button size="small" onClick={selectAllLibrary} disabled={libraryLoading}>
+                    Select all
+                  </Button>
+                  <Button size="small" onClick={clearLibrary} disabled={libraryLoading}>
+                    Clear
+                  </Button>
+                </Stack>
+                {libraryLoading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', py: 3 }}>
+                    <CircularProgress size={28} />
+                  </Box>
+                ) : (
+                  (() => {
+                    const byCat: Record<string, WorkoutTemplateSummary[]> = {};
+                    libraryTemplates.forEach((t) => {
+                      const c = t.category || 'other';
+                      (byCat[c] ||= []).push(t);
+                    });
+                    const catOrder = [
+                      'test',
+                      'recovery',
+                      'endurance',
+                      'tempo',
+                      'sweet_spot',
+                      'threshold',
+                      'vo2max',
+                      'race_pace',
+                      'other',
+                    ];
+                    const cats = [
+                      ...catOrder.filter((c) => byCat[c]?.length),
+                      ...Object.keys(byCat).filter((c) => !catOrder.includes(c)),
+                    ];
+                    return cats.map((cat) => (
+                      <Accordion key={cat} disableGutters elevation={0} sx={{ border: 1, borderColor: 'divider', mb: 1, '&:before': { display: 'none' } }}>
+                        <AccordionSummary expandIcon={<ExpandMoreIcon />}>
+                          <Typography sx={{ textTransform: 'capitalize', fontWeight: 600 }}>
+                            {cat.replace(/_/g, ' ')} ({byCat[cat].length})
+                          </Typography>
+                        </AccordionSummary>
+                        <AccordionDetails sx={{ pt: 0 }}>
+                          {byCat[cat].map((t) => (
+                            <FormControlLabel
+                              key={t.id}
+                              control={
+                                <Checkbox
+                                  checked={libraryEnabledIds.has(t.id)}
+                                  onChange={() => toggleLibraryTemplate(t.id)}
+                                  size="small"
+                                />
+                              }
+                              label={
+                                <Box>
+                                  <Typography variant="body2">{t.name}</Typography>
+                                  <Typography variant="caption" color="text.secondary">
+                                    {t.durationMinutes} min · TSS {t.targetTSS ?? '—'} · {t.stepCount} steps
+                                  </Typography>
+                                </Box>
+                              }
+                              sx={{ alignItems: 'flex-start', display: 'flex', mb: 0.5, width: '100%' }}
+                            />
+                          ))}
+                        </AccordionDetails>
+                      </Accordion>
+                    ));
+                  })()
+                )}
+              </CardContent>
+              <CardActions sx={{ px: 2, pb: 2 }}>
+                <Button
+                  variant="contained"
+                  startIcon={librarySaving ? <CircularProgress size={18} /> : <SaveIcon />}
+                  onClick={handleSaveLibraryPreferences}
+                  disabled={librarySaving || libraryLoading}
+                  fullWidth
+                  sx={{ minHeight: 44 }}
+                >
+                  {librarySaving ? 'Saving…' : 'Save library selection'}
+                </Button>
+              </CardActions>
+            </Card>
+
+            {/* Intervals.icu Integration */}
+            <Card sx={{ mt: 3 }}>
+              <CardContent>
+                <Box sx={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', mb: 2 }}>
+                  <Box sx={{ display: 'flex', alignItems: 'center' }}>
+                    <FitnessCenterIcon sx={{ fontSize: 40, mr: 2, color: 'primary.main' }} />
+                    <Box>
+                      <Typography variant="h6">Intervals.icu</Typography>
+                      <Typography variant="body2" color="text.secondary">
+                        Push planned workouts to ICU (then to Garmin via ICU)
+                      </Typography>
+                    </Box>
+                  </Box>
+                  {icuStatus?.connected ? (
+                    <Chip
+                      icon={<CheckCircleIcon />}
+                      label="Connected"
+                      color="success"
+                      size="small"
+                    />
+                  ) : (
+                    <Chip label="Not Connected" size="small" />
+                  )}
+                </Box>
+
+                {icuStatus?.connected && (
+                  <>
+                    <Divider sx={{ my: 2 }} />
+                    <Box sx={{ mb: 2 }}>
+                      {icuStatus.athlete_id && (
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Athlete ID:</strong> {icuStatus.athlete_id}
+                        </Typography>
+                      )}
+                      {icuStatus.last_sync && (
+                        <Typography variant="body2" color="text.secondary">
+                          <strong>Last Sync:</strong> {new Date(icuStatus.last_sync).toLocaleString()}
+                        </Typography>
+                      )}
+                    </Box>
+                    <Box sx={{ mb: 2 }}>
+                      <Typography variant="body2" gutterBottom>
+                        Push upcoming workouts
+                      </Typography>
+                      <FormControl fullWidth size="small">
+                        <Select
+                          value={icuDaysAhead}
+                          onChange={(e) => setIcuDaysAhead(e.target.value as number)}
+                        >
+                          <MenuItem value={7}>Next 7 days</MenuItem>
+                          <MenuItem value={14}>Next 14 days</MenuItem>
+                          <MenuItem value={30}>Next 30 days</MenuItem>
+                        </Select>
+                      </FormControl>
+                      <Alert severity="info" sx={{ mt: 1 }}>
+                        Syncs from your <strong>active</strong> training plan only. Enable Garmin
+                        sync inside Intervals.icu to deliver workouts to your watch.
+                      </Alert>
+                    </Box>
+                  </>
+                )}
+              </CardContent>
+              <CardActions sx={{ flexDirection: 'column', alignItems: 'stretch', gap: 1.5, px: 2, pb: 2 }}>
+                {icuStatus?.connected ? (
+                  <>
+                    <Button
+                      variant="contained"
+                      startIcon={icuSyncing ? <CircularProgress size={20} /> : <SyncIcon />}
+                      onClick={handleSyncIcuWorkouts}
+                      disabled={icuSyncing || icuConnecting}
+                      fullWidth
+                      sx={{ minHeight: 44 }}
+                    >
+                      {icuSyncing ? 'Syncing…' : 'Sync workouts to Intervals.icu'}
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<LinkOffIcon />}
+                      onClick={handleDisconnectIcu}
+                      disabled={icuConnecting || icuSyncing}
+                      fullWidth
+                      sx={{ minHeight: 44 }}
+                    >
+                      Disconnect
+                    </Button>
+                  </>
+                ) : (
+                  <Button
+                    variant="contained"
+                    startIcon={<LinkIcon />}
+                    onClick={() => setIcuConnectDialogOpen(true)}
+                    fullWidth
+                    sx={{ minHeight: 44 }}
+                  >
+                    Connect Intervals.icu
+                  </Button>
+                )}
+              </CardActions>
+            </Card>
           </Container>
         </TabPanel>
         
@@ -1286,6 +1643,44 @@ const SettingsNew: React.FC = () => {
             disabled={connecting || !garminEmail || !garminPassword}
           >
             {connecting ? <CircularProgress size={24} /> : 'Connect'}
+          </Button>
+        </DialogActions>
+      </Dialog>
+
+      {/* Connect Intervals.icu Dialog */}
+      <Dialog
+        open={icuConnectDialogOpen}
+        onClose={() => setIcuConnectDialogOpen(false)}
+        maxWidth="sm"
+        fullWidth
+      >
+        <DialogTitle>Connect Intervals.icu</DialogTitle>
+        <DialogContent>
+          <Typography variant="body2" color="text.secondary" paragraph>
+            Paste your API key from Intervals.icu → Settings → Developer Settings.
+            Kinesis will push planned workouts to your ICU calendar (one-way).
+          </Typography>
+          <TextField
+            autoFocus
+            margin="dense"
+            label="API Key"
+            type="password"
+            fullWidth
+            value={icuApiKey}
+            onChange={(e) => setIcuApiKey(e.target.value)}
+            placeholder="Your Intervals.icu API key"
+          />
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setIcuConnectDialogOpen(false)} disabled={icuConnecting}>
+            Cancel
+          </Button>
+          <Button
+            onClick={handleConnectIcu}
+            variant="contained"
+            disabled={icuConnecting || !icuApiKey.trim()}
+          >
+            {icuConnecting ? <CircularProgress size={24} /> : 'Connect'}
           </Button>
         </DialogActions>
       </Dialog>

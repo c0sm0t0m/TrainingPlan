@@ -67,11 +67,13 @@ async def health_check():
 
 
 # API v1 routes
-from src.api.routes import auth, training_plans, garmin, analytics, activities, events, ai_training_plan
+from src.api.routes import auth, training_plans, garmin, analytics, activities, events, ai_training_plan, icu, workout_library
 
 app.include_router(auth.router, prefix=f"{settings.api_v1_prefix}/auth", tags=["Authentication"])
 app.include_router(training_plans.router, prefix=f"{settings.api_v1_prefix}")
 app.include_router(garmin.router, prefix=f"{settings.api_v1_prefix}", tags=["Garmin Connect"])
+app.include_router(icu.router, prefix=f"{settings.api_v1_prefix}", tags=["Intervals.icu"])
+app.include_router(workout_library.router, prefix=f"{settings.api_v1_prefix}", tags=["Workout Library"])
 app.include_router(analytics.router, prefix=f"{settings.api_v1_prefix}", tags=["Analytics"])
 app.include_router(activities.router, prefix=f"{settings.api_v1_prefix}", tags=["Activities"])
 app.include_router(events.router, prefix=f"{settings.api_v1_prefix}", tags=["Events"])

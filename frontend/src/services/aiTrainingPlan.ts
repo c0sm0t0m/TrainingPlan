@@ -15,6 +15,21 @@ export interface PromptGenerationConfig {
   trainerStyle: string;
   customTrainerInstructions?: string;
   additionalNotes?: string;
+  generationMode?: 'full' | 'phased';
+  phaseIndex?: number;
+}
+
+export interface PlanPhaseInfo {
+  index: number;
+  id: string;
+  name: string;
+  focus: string;
+  weekStart: number;
+  weekEnd: number;
+  weeks: number;
+  startDate: string;
+  endDate: string;
+  isLast: boolean;
 }
 
 export interface TrainerStyle {
@@ -38,6 +53,10 @@ export interface PromptGenerationResponse {
   athleteData: any;
   eventDetails: any;
   planConfig: any;
+  generationMode: 'full' | 'phased';
+  phases: PlanPhaseInfo[];
+  currentPhase: PlanPhaseInfo | null;
+  recommendedMode: 'full' | 'phased';
 }
 
 export interface ValidationResponse {
@@ -67,13 +86,55 @@ export interface ImportResponse {
 }
 
 /**
+ * Merge multiple phase JSON plan files into one trainingPlan document.
+ */
+export function mergePhasePlanFiles(parsedPlans: any[]): any {
+  if (!parsedPlans.length) {
+    throw new Error('No plans to merge');
+  }
+
+  const roots = parsedPlans.map((p) => p.trainingPlan || p);
+  const allWorkouts = roots.flatMap((r) => r.workouts || []);
+  if (!allWorkouts.length) {
+    throw new Error('Merged plans contain no workouts');
+  }
+
+  allWorkouts.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+  const startDates = roots.map((r) => r.startDate).filter(Boolean);
+  const endDates = roots.map((r) => r.endDate).filter(Boolean);
+  const startDate = startDates.sort()[0];
+  const endDate = endDates.sort().slice(-1)[0];
+
+  const baseName = (roots[0].name || 'Training Plan').replace(/\s*[—-]\s*Phase.*/i, '').trim();
+  const targetEvent = roots.find((r) => r.targetEvent)?.targetEvent;
+  const sportType = roots.find((r) => r.sportType)?.sportType || 'triathlon';
+
+  return {
+    trainingPlan: {
+      name: roots.length > 1 ? `${baseName} (merged)` : roots[0].name,
+      description: roots
+        .map((r) => r.description)
+        .filter(Boolean)
+        .join(' ')
+        .slice(0, 2000) || `Merged ${roots.length} phase files`,
+      startDate,
+      endDate,
+      sportType,
+      targetEvent,
+      workouts: allWorkouts,
+    },
+  };
+}
+
+/**
  * Generate AI prompt for training plan creation
  */
 export const generateAIPrompt = async (
   config: PromptGenerationConfig
 ): Promise<PromptGenerationResponse> => {
   const response = await api.post('/ai-training-plan/generate-prompt', config, {
-    timeout: 30000, // 30 seconds for AI prompt generation (needs to fetch activities)
+    timeout: 30000,
   });
   return response.data;
 };
@@ -84,13 +145,13 @@ export const generateAIPrompt = async (
 export const validateAIPlan = async (file: File): Promise<ValidationResponse> => {
   const formData = new FormData();
   formData.append('file', file);
-  
+
   const response = await api.post('/ai-training-plan/validate', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
   });
-  
+
   return response.data;
 };
 
@@ -100,13 +161,13 @@ export const validateAIPlan = async (file: File): Promise<ValidationResponse> =>
 export const importAIPlan = async (file: File): Promise<ImportResponse> => {
   const formData = new FormData();
   formData.append('file', file);
-  
+
   const response = await api.post('/ai-training-plan/import', formData, {
     headers: {
       'Content-Type': 'multipart/form-data',
     },
   });
-  
+
   return response.data;
 };
 
@@ -114,10 +175,7 @@ export const importAIPlan = async (file: File): Promise<ImportResponse> => {
  * Get all available trainer styles
  */
 export const getTrainerStyles = async (): Promise<TrainerStyle[]> => {
-  console.log('[aiTrainingPlan Service] Calling GET /ai-training-plan/trainer-styles');
   const response = await api.get('/ai-training-plan/trainer-styles');
-  console.log('[aiTrainingPlan Service] Response received:', response.data);
-  console.log('[aiTrainingPlan Service] Trainers array:', response.data.trainers);
   return response.data.trainers;
 };
 

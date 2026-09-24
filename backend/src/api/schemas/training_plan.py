@@ -13,6 +13,7 @@ class SportType(str, Enum):
     CYCLING = "cycling"
     SWIMMING = "swimming"
     TRIATHLON = "triathlon"
+    STRENGTH = "strength"
     GYM = "gym"
     OTHER = "other"
 
@@ -56,7 +57,14 @@ class WorkoutBase(BaseModel):
 
 class WorkoutCreate(WorkoutBase):
     """Schema for creating a workout"""
-    pass
+    structured_steps: Optional[List[dict]] = Field(
+        None,
+        alias="structuredSteps",
+        description="Optional ICU/Garmin structured steps (power %FTP, etc.)",
+    )
+
+    class Config:
+        populate_by_name = True
 
 
 class WorkoutUpdate(BaseModel):
@@ -74,6 +82,10 @@ class WorkoutUpdate(BaseModel):
     actual_duration_minutes: Optional[int] = None
     actual_distance_km: Optional[float] = None
     notes: Optional[str] = None
+    structured_steps: Optional[List[dict]] = Field(None, alias="structuredSteps")
+
+    class Config:
+        populate_by_name = True
 
 
 class Workout(WorkoutBase):
@@ -84,6 +96,8 @@ class Workout(WorkoutBase):
     actual_duration_minutes: Optional[int] = None
     actual_distance_km: Optional[float] = None
     notes: Optional[str] = None
+    structured_workout_json: Optional[str] = None
+    icu_sync_status: Optional[str] = None
     created_at: datetime
     updated_at: datetime
 

@@ -28,6 +28,12 @@ import {
   ToggleButton,
   Tooltip,
   alpha,
+  FormControlLabel,
+  Checkbox,
+  List,
+  ListItemButton,
+  ListItemText,
+  CircularProgress,
 } from '@mui/material';
 import {
   ChevronLeft as ChevronLeftIcon,
@@ -39,6 +45,7 @@ import {
   FitnessCenter as StrengthIcon,
   Event as EventIcon,
   Add as AddIcon,
+  LibraryBooks as LibraryIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -52,6 +59,11 @@ import { format, addDays, startOfMonth, getWeek, startOfWeek } from 'date-fns';
 import MobileWeekGrid from './calendar/MobileWeekGrid';
 import WeeklySummaryBar from '../components/calendar/WeeklySummaryBar';
 import MonthCalendarView from './calendar/MonthCalendarView';
+import {
+  listWorkoutTemplates,
+  scheduleWorkoutTemplate,
+  WorkoutTemplateSummary,
+} from '../services/workoutLibrary';
 
 interface Workout {
   id: number;
@@ -126,13 +138,18 @@ const Calendar: React.FC = () => {
       if (state.calendarView) {
         setTimeout(() => setCalendarView(state.calendarView as 'month' | 'week' | 'day'), 0);
       }
+      // Week view should land on Monday of that week
+      const view = state.calendarView || 'week';
+      if (view === 'week' || view === 'month') {
+        return startOfWeek(restoredDate, { weekStartsOn: 1 });
+      }
       return restoredDate;
     }
     
-    // Start from today (for day view)
+    // Default: Monday of the current week
     const today = new Date();
     today.setHours(0, 0, 0, 0);
-    return today;
+    return startOfWeek(today, { weekStartsOn: 1 });
   });
   const [weeksToShow] = useState(156); // Show 156 weeks (3 years) for scrolling 12+ months ahead
   const [plans, setPlans] = useState<TrainingPlan[]>([]);
@@ -155,9 +172,19 @@ const Calendar: React.FC = () => {
   const [quickAddDuration, setQuickAddDuration] = useState(60);
   const [quickAddTSS, setQuickAddTSS] = useState(50);
   const [quickAddSaving, setQuickAddSaving] = useState(false);
+
+  // Workout library (bike structured → ICU → Garmin / Kickr)
+  const [libraryOpen, setLibraryOpen] = useState(false);
+  const [libraryTemplates, setLibraryTemplates] = useState<WorkoutTemplateSummary[]>([]);
+  const [libraryLoading, setLibraryLoading] = useState(false);
+  const [librarySelectedId, setLibrarySelectedId] = useState<string | null>(null);
+  const [libraryDate, setLibraryDate] = useState<Date>(new Date());
+  const [librarySyncIcu, setLibrarySyncIcu] = useState(true);
+  const [librarySaving, setLibrarySaving] = useState(false);
+  const [libraryMessage, setLibraryMessage] = useState<string | null>(null);
   
-  // Calendar view state - default to day view showing today
-  const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('day');
+  // Default to week view focused on the current week
+  const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('week');
   
   // Swipe handlers for mobile - DISABLED for week view
   // Week view uses scroll snap instead, handled by scroll event listener
@@ -397,43 +424,55 @@ const Calendar: React.FC = () => {
   const fetchData = async () => {
     try {
       setLoading(true);
-      
-      // Fetch planned workouts (only from active training plans)
-      const response = await api.get('/training-plans', {
-        params: { active_only: true }
-      });
-      const allPlans = response.data;
-      
-      const plansWithWorkouts = await Promise.all(
-        allPlans.map(async (plan: any) => {
-          const detailResponse = await api.get(`/training-plans/${plan.id}`);
-          return detailResponse.data;
-        })
-      );
-      
-      setPlans(plansWithWorkouts);
-      const allWorkouts = plansWithWorkouts.flatMap((plan: TrainingPlan) => plan.workouts);
-      setWorkouts(allWorkouts);
-      
-      // Fetch completed activities for wider range (12 months)
+      setError(null);
+
+      // Load Garmin activities independently so a plan schema error can't blank the calendar
       const today = new Date();
       const twelveMonthsAgo = new Date(today);
       twelveMonthsAgo.setMonth(today.getMonth() - 12);
-      
       const startDate = twelveMonthsAgo.toISOString().split('T')[0];
       const endDate = today.toISOString().split('T')[0];
-      
-      try {
-        const activitiesResponse = await api.get('/garmin/activities/by-date-range', {
-          params: { start_date: startDate, end_date: endDate }
+
+      const activitiesPromise = api
+        .get('/garmin/activities/by-date-range', {
+          params: { start_date: startDate, end_date: endDate },
+        })
+        .then((activitiesResponse) => {
+          const data = activitiesResponse.data;
+          setActivities(Array.isArray(data) ? data : []);
+        })
+        .catch((actErr: any) => {
+          console.log('No Garmin activities loaded:', actErr.response?.data?.detail);
+          setActivities([]);
         });
-        setActivities(activitiesResponse.data);
-      } catch (actErr: any) {
-        console.log('No Garmin activities loaded:', actErr.response?.data?.detail);
-        setActivities([]);
+
+      try {
+        // Fetch planned workouts (only from active training plans)
+        const response = await api.get('/training-plans', {
+          params: { active_only: true },
+        });
+        const allPlans = Array.isArray(response.data) ? response.data : [];
+
+        const plansWithWorkouts = await Promise.all(
+          allPlans.map(async (plan: any) => {
+            const detailResponse = await api.get(`/training-plans/${plan.id}`);
+            return detailResponse.data;
+          })
+        );
+
+        setPlans(plansWithWorkouts);
+        const allWorkouts = plansWithWorkouts.flatMap(
+          (plan: TrainingPlan) => plan.workouts || []
+        );
+        setWorkouts(allWorkouts);
+      } catch (planErr: any) {
+        console.error('Failed to load training plans:', planErr.response?.data?.detail || planErr);
+        setPlans([]);
+        setWorkouts([]);
+        setError(planErr.response?.data?.detail || 'Failed to load training plans');
       }
-      
-      setError(null);
+
+      await activitiesPromise;
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load calendar data');
     } finally {
@@ -824,16 +863,16 @@ const Calendar: React.FC = () => {
     try {
       setQuickAddSaving(true);
       
-      // Use first plan for now (TODO: let user select)
+      // Prefer active plan
       const planId = plans[0].id;
       
       await api.post(`/training-plans/${planId}/workouts`, {
         date: format(quickAddDate, 'yyyy-MM-dd'),
         sport_type: quickAddSport,
-        workout_type: 'custom',
+        workout_type: 'easy',
         title: quickAddTitle,
         duration_minutes: quickAddDuration,
-        tss: quickAddTSS,
+        target_tss: quickAddTSS,
       });
       
       setQuickAddOpen(false);
@@ -842,6 +881,58 @@ const Calendar: React.FC = () => {
       setError(err.response?.data?.detail || 'Failed to create workout');
     } finally {
       setQuickAddSaving(false);
+    }
+  };
+
+  const handleLibraryOpen = async (date?: Date) => {
+    setLibraryDate(date || new Date());
+    setLibrarySelectedId(null);
+    setLibraryMessage(null);
+    setLibrarySyncIcu(true);
+    setLibraryOpen(true);
+    try {
+      setLibraryLoading(true);
+      const templates = await listWorkoutTemplates({ forCalendar: true });
+      setLibraryTemplates(templates);
+      const smoke = templates.find((t) => t.id === 'bike-erg-smoke-30');
+      if (smoke) setLibrarySelectedId(smoke.id);
+      else if (templates[0]) setLibrarySelectedId(templates[0].id);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to load workout library');
+      setLibraryOpen(false);
+    } finally {
+      setLibraryLoading(false);
+    }
+  };
+
+  const handleLibrarySchedule = async () => {
+    if (!librarySelectedId) return;
+    if (plans.length === 0) {
+      setError('Activate a training plan first');
+      return;
+    }
+    try {
+      setLibrarySaving(true);
+      setLibraryMessage(null);
+      const result = await scheduleWorkoutTemplate(librarySelectedId, {
+        date: format(libraryDate, 'yyyy-MM-dd'),
+        plan_id: plans[0].id,
+        sync_to_icu: librarySyncIcu,
+      });
+      setLibraryMessage(
+        result.icu_message ||
+          (result.icu_synced
+            ? 'Added & synced to Intervals.icu'
+            : 'Added to calendar')
+      );
+      await fetchData();
+      if (result.icu_synced) {
+        setTimeout(() => setLibraryOpen(false), 1200);
+      }
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to schedule workout');
+    } finally {
+      setLibrarySaving(false);
     }
   };
 
@@ -877,8 +968,8 @@ const Calendar: React.FC = () => {
     );
   }
 
-  // Empty state
-  if (isCalendarEmpty && !loading) {
+  // Empty state (only when load succeeded with no data)
+  if (isCalendarEmpty && !loading && !error) {
     return (
       <Container maxWidth="xl" sx={{ mt: 4, mb: 4 }}>
         <Box sx={{ mb: 3 }}>
@@ -1367,36 +1458,39 @@ const Calendar: React.FC = () => {
           </Box>
         )}
 
-        {/* Quick-Add FAB - Hidden on mobile */}
-        {!isMobile && (
-          <SpeedDial
-            ariaLabel="Quick add workout"
-            icon={<AddIcon />}
-            direction="up"
-            sx={{ position: 'fixed', bottom: 80, right: 16 }}
-          >
-            <SpeedDialAction
-              icon={<RunIcon />}
-              tooltipTitle="Quick Run"
-              onClick={() => handleQuickAddOpen('running')}
-            />
-            <SpeedDialAction
-              icon={<BikeIcon />}
-              tooltipTitle="Quick Ride"
-              onClick={() => handleQuickAddOpen('cycling')}
-            />
-            <SpeedDialAction
-              icon={<SwimIcon />}
-              tooltipTitle="Quick Swim"
-              onClick={() => handleQuickAddOpen('swimming')}
-            />
-            <SpeedDialAction
-              icon={<StrengthIcon />}
-              tooltipTitle="Quick Strength"
-              onClick={() => handleQuickAddOpen('strength')}
-            />
-          </SpeedDial>
-        )}
+        {/* Quick-Add FAB */}
+        <SpeedDial
+          ariaLabel="Quick add workout"
+          icon={<AddIcon />}
+          direction="up"
+          sx={{ position: 'fixed', bottom: 80, right: 16 }}
+        >
+          <SpeedDialAction
+            icon={<LibraryIcon />}
+            tooltipTitle="Bike library (ERG)"
+            onClick={() => handleLibraryOpen()}
+          />
+          <SpeedDialAction
+            icon={<RunIcon />}
+            tooltipTitle="Quick Run"
+            onClick={() => handleQuickAddOpen('running')}
+          />
+          <SpeedDialAction
+            icon={<BikeIcon />}
+            tooltipTitle="Quick Ride"
+            onClick={() => handleQuickAddOpen('cycling')}
+          />
+          <SpeedDialAction
+            icon={<SwimIcon />}
+            tooltipTitle="Quick Swim"
+            onClick={() => handleQuickAddOpen('swimming')}
+          />
+          <SpeedDialAction
+            icon={<StrengthIcon />}
+            tooltipTitle="Quick Strength"
+            onClick={() => handleQuickAddOpen('strength')}
+          />
+        </SpeedDial>
 
         {/* Quick-Add Drawer */}
         <SwipeableDrawer
@@ -1465,6 +1559,77 @@ const Calendar: React.FC = () => {
             </Stack>
           </Box>
         </SwipeableDrawer>
+
+        {/* Bike workout library → calendar → ICU */}
+        <Dialog open={libraryOpen} onClose={() => setLibraryOpen(false)} fullWidth maxWidth="sm">
+          <DialogTitle>Bike workout library</DialogTitle>
+          <DialogContent dividers>
+            <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+              Structured power workouts enabled in Settings → Workout library.
+              Start with “ERG Smoke Test” for a short Kickr check.
+            </Typography>
+            {libraryTemplates.length === 0 && !libraryLoading && (
+              <Alert severity="info" sx={{ mb: 2 }}>
+                No workouts enabled. Open Settings → Workout library to choose templates.
+              </Alert>
+            )}
+            <TextField
+              label="Date"
+              type="date"
+              value={format(libraryDate, 'yyyy-MM-dd')}
+              onChange={(e) => setLibraryDate(new Date(e.target.value))}
+              fullWidth
+              sx={{ mb: 2 }}
+              InputLabelProps={{ shrink: true }}
+            />
+            {libraryLoading ? (
+              <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+                <CircularProgress size={28} />
+              </Box>
+            ) : (
+              <List dense sx={{ maxHeight: 320, overflow: 'auto', mb: 1 }}>
+                {libraryTemplates.map((t) => (
+                  <ListItemButton
+                    key={t.id}
+                    selected={librarySelectedId === t.id}
+                    onClick={() => setLibrarySelectedId(t.id)}
+                  >
+                    <ListItemText
+                      primary={`${t.name} · ${t.durationMinutes ?? '?'} min`}
+                      secondary={`${t.category || 'bike'} · TSS ${t.targetTSS ?? '—'} · ${t.stepCount} steps`}
+                    />
+                  </ListItemButton>
+                ))}
+              </List>
+            )}
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={librarySyncIcu}
+                  onChange={(e) => setLibrarySyncIcu(e.target.checked)}
+                />
+              }
+              label="Sync to Intervals.icu (Garmin)"
+            />
+            {libraryMessage && (
+              <Alert severity="success" sx={{ mt: 1 }}>
+                {libraryMessage}
+              </Alert>
+            )}
+          </DialogContent>
+          <DialogActions>
+            <Button onClick={() => setLibraryOpen(false)} disabled={librarySaving}>
+              Close
+            </Button>
+            <Button
+              variant="contained"
+              onClick={handleLibrarySchedule}
+              disabled={!librarySelectedId || librarySaving || libraryLoading}
+            >
+              {librarySaving ? 'Scheduling…' : librarySyncIcu ? 'Add & sync' : 'Add to calendar'}
+            </Button>
+          </DialogActions>
+        </Dialog>
       </Box>
     );
   }
@@ -1569,8 +1734,8 @@ const Calendar: React.FC = () => {
                     const dayWorkouts = getWorkoutsForDate(date);
                     const dayActivities = getActivitiesForDate(date);
                     const dailyTSS = [
-                      ...dayWorkouts.map(w => w.tss || 0),
-                      ...dayActivities.map(a => a.training_stress_score || 0)
+                      ...dayWorkouts.map(w => w.target_tss || w.tss || 0),
+                      ...dayActivities.map(a => a.calculated_tss || a.training_load || 0)
                     ].reduce((sum, tss) => sum + tss, 0);
                     const isToday = date.toDateString() === new Date().toDateString();
 
@@ -2098,6 +2263,167 @@ const Calendar: React.FC = () => {
             </>
           );
         })()}
+      </Dialog>
+
+      <SpeedDial
+        ariaLabel="Quick add workout"
+        icon={<AddIcon />}
+        direction="up"
+        sx={{ position: 'fixed', bottom: 24, right: 24 }}
+      >
+        <SpeedDialAction
+          icon={<LibraryIcon />}
+          tooltipTitle="Bike library (ERG)"
+          onClick={() => handleLibraryOpen()}
+        />
+        <SpeedDialAction
+          icon={<RunIcon />}
+          tooltipTitle="Quick Run"
+          onClick={() => handleQuickAddOpen('running')}
+        />
+        <SpeedDialAction
+          icon={<BikeIcon />}
+          tooltipTitle="Quick Ride"
+          onClick={() => handleQuickAddOpen('cycling')}
+        />
+        <SpeedDialAction
+          icon={<SwimIcon />}
+          tooltipTitle="Quick Swim"
+          onClick={() => handleQuickAddOpen('swimming')}
+        />
+        <SpeedDialAction
+          icon={<StrengthIcon />}
+          tooltipTitle="Quick Strength"
+          onClick={() => handleQuickAddOpen('strength')}
+        />
+      </SpeedDial>
+
+      <SwipeableDrawer
+        anchor="bottom"
+        open={quickAddOpen}
+        onClose={() => setQuickAddOpen(false)}
+        onOpen={() => {}}
+      >
+        <Box sx={{ p: 3, maxHeight: '70vh' }}>
+          <Typography variant="h6" gutterBottom>
+            Quick Add: {quickAddSport.charAt(0).toUpperCase() + quickAddSport.slice(1)}
+          </Typography>
+          <TextField
+            label="Workout Title"
+            value={quickAddTitle}
+            onChange={(e) => setQuickAddTitle(e.target.value)}
+            fullWidth
+            sx={{ mt: 2 }}
+          />
+          <TextField
+            label="Date"
+            type="date"
+            value={format(quickAddDate, 'yyyy-MM-dd')}
+            onChange={(e) => setQuickAddDate(new Date(e.target.value))}
+            fullWidth
+            sx={{ mt: 2 }}
+            InputLabelProps={{ shrink: true }}
+          />
+          <Stack direction="row" spacing={2} sx={{ mt: 2 }}>
+            <TextField
+              label="Duration (min)"
+              type="number"
+              value={quickAddDuration}
+              onChange={(e) => setQuickAddDuration(parseInt(e.target.value) || 0)}
+              fullWidth
+            />
+            <TextField
+              label="TSS"
+              type="number"
+              value={quickAddTSS}
+              onChange={(e) => setQuickAddTSS(parseInt(e.target.value) || 0)}
+              fullWidth
+            />
+          </Stack>
+          <Stack direction="row" spacing={2} sx={{ mt: 3 }}>
+            <Button variant="outlined" fullWidth onClick={() => setQuickAddOpen(false)} disabled={quickAddSaving}>
+              Cancel
+            </Button>
+            <Button
+              variant="contained"
+              fullWidth
+              onClick={handleQuickAddSave}
+              disabled={!quickAddTitle || quickAddSaving}
+            >
+              {quickAddSaving ? 'Saving...' : 'Add Workout'}
+            </Button>
+          </Stack>
+        </Box>
+      </SwipeableDrawer>
+
+      <Dialog open={libraryOpen} onClose={() => setLibraryOpen(false)} fullWidth maxWidth="sm">
+        <DialogTitle>Bike workout library</DialogTitle>
+        <DialogContent dividers>
+          <Typography variant="body2" color="text.secondary" sx={{ mb: 2 }}>
+            Structured power workouts enabled in Settings → Workout library.
+            Start with “ERG Smoke Test” for a short Kickr check.
+          </Typography>
+          {libraryTemplates.length === 0 && !libraryLoading && (
+            <Alert severity="info" sx={{ mb: 2 }}>
+              No workouts enabled. Open Settings → Workout library to choose templates.
+            </Alert>
+          )}
+          <TextField
+            label="Date"
+            type="date"
+            value={format(libraryDate, 'yyyy-MM-dd')}
+            onChange={(e) => setLibraryDate(new Date(e.target.value))}
+            fullWidth
+            sx={{ mb: 2 }}
+            InputLabelProps={{ shrink: true }}
+          />
+          {libraryLoading ? (
+            <Box sx={{ display: 'flex', justifyContent: 'center', py: 4 }}>
+              <CircularProgress size={28} />
+            </Box>
+          ) : (
+            <List dense sx={{ maxHeight: 320, overflow: 'auto', mb: 1 }}>
+              {libraryTemplates.map((t) => (
+                <ListItemButton
+                  key={t.id}
+                  selected={librarySelectedId === t.id}
+                  onClick={() => setLibrarySelectedId(t.id)}
+                >
+                  <ListItemText
+                    primary={`${t.name} · ${t.durationMinutes ?? '?'} min`}
+                    secondary={`${t.category || 'bike'} · TSS ${t.targetTSS ?? '—'} · ${t.stepCount} steps`}
+                  />
+                </ListItemButton>
+              ))}
+            </List>
+          )}
+          <FormControlLabel
+            control={
+              <Checkbox
+                checked={librarySyncIcu}
+                onChange={(e) => setLibrarySyncIcu(e.target.checked)}
+              />
+            }
+            label="Sync to Intervals.icu (Garmin)"
+          />
+          {libraryMessage && (
+            <Alert severity="success" sx={{ mt: 1 }}>
+              {libraryMessage}
+            </Alert>
+          )}
+        </DialogContent>
+        <DialogActions>
+          <Button onClick={() => setLibraryOpen(false)} disabled={librarySaving}>
+            Close
+          </Button>
+          <Button
+            variant="contained"
+            onClick={handleLibrarySchedule}
+            disabled={!librarySelectedId || librarySaving || libraryLoading}
+          >
+            {librarySaving ? 'Scheduling…' : librarySyncIcu ? 'Add & sync' : 'Add to calendar'}
+          </Button>
+        </DialogActions>
       </Dialog>
       </Container>
     </Box>

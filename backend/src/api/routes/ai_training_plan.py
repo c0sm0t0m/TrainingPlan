@@ -14,6 +14,7 @@ from src.api.routes.auth import get_current_active_user
 from src.api.schemas.ai_training_plan import (
     PromptGenerationConfig,
     PromptGenerationResponse,
+    PlanPhaseInfo,
     TrainingPlanImport,
     ValidationResult,
     PlanPreview,
@@ -83,11 +84,46 @@ async def generate_prompt(
     try:
         result = await generate_ai_prompt(current_user.id, config, db)
         
+        phases = [
+            PlanPhaseInfo(
+                index=p["index"],
+                id=p["id"],
+                name=p["name"],
+                focus=p["focus"],
+                week_start=p["weekStart"],
+                week_end=p["weekEnd"],
+                weeks=p["weeks"],
+                start_date=p["startDate"],
+                end_date=p["endDate"],
+                is_last=p["isLast"],
+            )
+            for p in result.get("phases") or []
+        ]
+        current = None
+        if result.get("current_phase"):
+            cp = result["current_phase"]
+            current = PlanPhaseInfo(
+                index=cp["index"],
+                id=cp["id"],
+                name=cp["name"],
+                focus=cp["focus"],
+                week_start=cp["weekStart"],
+                week_end=cp["weekEnd"],
+                weeks=cp["weeks"],
+                start_date=cp["startDate"],
+                end_date=cp["endDate"],
+                is_last=cp["isLast"],
+            )
+
         return PromptGenerationResponse(
             prompt=result["prompt"],
             athlete_data=result["athlete_data"],
             event_details=result["event_details"],
-            plan_config=result["plan_config"]
+            plan_config=result["plan_config"],
+            generation_mode=result.get("generation_mode", "phased"),
+            phases=phases,
+            current_phase=current,
+            recommended_mode=result.get("recommended_mode", "phased"),
         )
     except Exception as e:
         raise HTTPException(

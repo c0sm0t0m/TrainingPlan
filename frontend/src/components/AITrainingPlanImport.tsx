@@ -21,12 +21,31 @@ import {
   CloudUpload as CloudUploadIcon,
   CheckCircle as CheckCircleIcon,
 } from '@mui/icons-material';
-import { validateAIPlan, importAIPlan, ValidationResponse } from '../services/aiTrainingPlan';
+import {
+  validateAIPlan,
+  importAIPlan,
+  ValidationResponse,
+  mergePhasePlanFiles,
+} from '../services/aiTrainingPlan';
 
 interface AITrainingPlanImportProps {
   open: boolean;
   onClose: () => void;
   onSuccess: () => void;
+}
+
+function cleanChatJson(text: string): string {
+  let t = text.trim();
+  t = t.replace(/^```(?:json)?\s*/i, '');
+  t = t.replace(/\s*```$/i, '');
+  if (!t.startsWith('{')) {
+    const start = t.indexOf('{');
+    const end = t.lastIndexOf('}');
+    if (start !== -1 && end > start) {
+      t = t.slice(start, end + 1);
+    }
+  }
+  return t.trim();
 }
 
 const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
@@ -36,14 +55,15 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
 }) => {
   const [step, setStep] = useState<'upload' | 'preview' | 'importing'>('upload');
   const [file, setFile] = useState<File | null>(null);
+  const [fileLabel, setFileLabel] = useState<string>('');
   const [validationResult, setValidationResult] = useState<ValidationResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragActive, setDragActive] = useState(false);
 
   const handleClose = () => {
-    // Reset state
     setStep('upload');
     setFile(null);
+    setFileLabel('');
     setValidationResult(null);
     setError(null);
     onClose();
@@ -64,49 +84,62 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
     e.stopPropagation();
     setDragActive(false);
 
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFileSelect(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      handleFilesSelect(Array.from(e.dataTransfer.files));
     }
   };
 
   const handleFileInput = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFileSelect(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      handleFilesSelect(Array.from(e.target.files));
     }
   };
 
-  const handleFileSelect = async (selectedFile: File) => {
-    // Validate file type
-    if (!selectedFile.name.endsWith('.json')) {
-      setError('Please upload a JSON file');
+  const handleFilesSelect = async (selectedFiles: File[]) => {
+    const jsonFiles = selectedFiles.filter((f) => f.name.toLowerCase().endsWith('.json'));
+    if (!jsonFiles.length) {
+      setError('Please upload one or more .json files');
       return;
     }
 
-    // Validate file size (5MB limit)
-    if (selectedFile.size > 5 * 1024 * 1024) {
-      setError('File size must be less than 5MB');
-      return;
+    for (const f of jsonFiles) {
+      if (f.size > 5 * 1024 * 1024) {
+        setError(`File ${f.name} exceeds 5MB`);
+        return;
+      }
     }
 
-    setFile(selectedFile);
     setError(null);
 
-    // Validate the plan
     try {
-      const result = await validateAIPlan(selectedFile);
-      console.log('📊 Validation result:', result);
-      console.log('📊 Preview data:', result.preview);
-      console.log('📊 totalTss:', result.preview?.totalTss);
-      console.log('📊 totalDistanceKm:', result.preview?.totalDistanceKm);
+      let uploadFile: File;
+
+      if (jsonFiles.length === 1) {
+        uploadFile = jsonFiles[0];
+        setFileLabel(jsonFiles[0].name);
+      } else {
+        const parsed: any[] = [];
+        for (const f of jsonFiles) {
+          const text = cleanChatJson(await f.text());
+          parsed.push(JSON.parse(text));
+        }
+        const merged = mergePhasePlanFiles(parsed);
+        const blob = new Blob([JSON.stringify(merged, null, 2)], { type: 'application/json' });
+        uploadFile = new File([blob], 'merged_training_plan.json', { type: 'application/json' });
+        setFileLabel(`${jsonFiles.length} phase files → merged`);
+      }
+
+      setFile(uploadFile);
+      const result = await validateAIPlan(uploadFile);
       setValidationResult(result);
-      
+
       if (result.validation.valid) {
         setStep('preview');
       } else {
         setError(`Validation failed: ${result.validation.errors.join(', ')}`);
       }
     } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to validate plan');
+      setError(err.response?.data?.detail || err.message || 'Failed to validate plan');
     }
   };
 
@@ -128,9 +161,7 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
 
   return (
     <Dialog open={open} onClose={handleClose} maxWidth="md" fullWidth>
-      <DialogTitle>
-        Import AI Training Plan
-      </DialogTitle>
+      <DialogTitle>Import AI Training Plan</DialogTitle>
 
       <DialogContent>
         {error && (
@@ -139,15 +170,17 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
           </Alert>
         )}
 
-        {/* Upload Step */}
         {step === 'upload' && (
           <Box>
             <Alert severity="info" sx={{ mb: 3 }}>
               <AlertTitle>How to import</AlertTitle>
               <ol style={{ margin: 0, paddingLeft: 20 }}>
-                <li>Get JSON response from ChatGPT/Claude</li>
-                <li>Save it as a .json file</li>
-                <li>Upload the file here</li>
+                <li>Get pure JSON from Gemini/ChatGPT/Claude (no markdown fences)</li>
+                <li>Save as .json (one file, or multiple phase files)</li>
+                <li>
+                  Upload here — select <strong>multiple phase files</strong> to merge into one plan
+                </li>
+                <li>Workouts should include structuredSteps</li>
               </ol>
             </Alert>
 
@@ -175,36 +208,35 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
                 id="file-upload"
                 type="file"
                 accept=".json"
+                multiple
                 style={{ display: 'none' }}
                 onChange={handleFileInput}
               />
-              
+
               <CloudUploadIcon sx={{ fontSize: 64, color: 'primary.main', mb: 2 }} />
-              
+
               <Typography variant="h6" gutterBottom>
-                Drop JSON file here
+                Drop JSON file(s) here
               </Typography>
-              
+
               <Typography variant="body2" color="text.secondary" gutterBottom>
-                or click to browse
+                or click to browse (multi-select for phases)
               </Typography>
 
               <Typography variant="caption" color="text.secondary">
-                Supports: .json files up to 5MB
+                Supports: .json up to 5MB each
               </Typography>
             </Paper>
           </Box>
         )}
 
-        {/* Preview Step */}
         {step === 'preview' && validationResult && (
           <Box>
             <Alert severity="success" icon={<CheckCircleIcon />} sx={{ mb: 3 }}>
               <AlertTitle>Plan Validated Successfully</AlertTitle>
-              Your training plan is ready to import
+              {fileLabel || 'Your training plan'} is ready to import
             </Alert>
 
-            {/* Plan Statistics */}
             <Grid container spacing={2} sx={{ mb: 3 }}>
               <Grid item xs={6} sm={3}>
                 <Card variant="outlined">
@@ -256,7 +288,6 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
               </Grid>
             </Grid>
 
-            {/* Plan Details */}
             <Paper sx={{ p: 2, mb: 2 }}>
               <Typography variant="subtitle2" gutterBottom>
                 Plan Details
@@ -265,33 +296,40 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
                 <strong>Name:</strong> {validationResult.preview?.name}
               </Typography>
               <Typography variant="body2">
-                <strong>Start:</strong> {validationResult.preview ? new Date(validationResult.preview.startDate).toLocaleDateString() : ''}
+                <strong>Start:</strong>{' '}
+                {validationResult.preview
+                  ? new Date(validationResult.preview.startDate).toLocaleDateString()
+                  : ''}
               </Typography>
               <Typography variant="body2">
-                <strong>End:</strong> {validationResult.preview ? new Date(validationResult.preview.endDate).toLocaleDateString() : ''}
+                <strong>End:</strong>{' '}
+                {validationResult.preview
+                  ? new Date(validationResult.preview.endDate).toLocaleDateString()
+                  : ''}
               </Typography>
             </Paper>
 
-            {/* Workout Distribution by Sport */}
-            {validationResult.preview?.workoutTypeBreakdown && Object.keys(validationResult.preview.workoutTypeBreakdown).length > 0 && (
-              <Paper sx={{ p: 2 }}>
-                <Typography variant="subtitle2" gutterBottom>
-                  Workouts by Type
-                </Typography>
-                <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ gap: 1 }}>
-                  {Object.entries(validationResult.preview.workoutTypeBreakdown).map(([type, count]) => (
-                    <Chip
-                      key={type}
-                      label={`${type}: ${count}`}
-                      color="primary"
-                      variant="outlined"
-                    />
-                  ))}
-                </Stack>
-              </Paper>
-            )}
+            {validationResult.preview?.workoutTypeBreakdown &&
+              Object.keys(validationResult.preview.workoutTypeBreakdown).length > 0 && (
+                <Paper sx={{ p: 2 }}>
+                  <Typography variant="subtitle2" gutterBottom>
+                    Workouts by Type
+                  </Typography>
+                  <Stack direction="row" spacing={1} flexWrap="wrap" sx={{ gap: 1 }}>
+                    {Object.entries(validationResult.preview.workoutTypeBreakdown).map(
+                      ([type, count]) => (
+                        <Chip
+                          key={type}
+                          label={`${type}: ${count}`}
+                          color="primary"
+                          variant="outlined"
+                        />
+                      )
+                    )}
+                  </Stack>
+                </Paper>
+              )}
 
-            {/* Warnings */}
             {validationResult.validation.warnings.length > 0 && (
               <Alert severity="warning" sx={{ mt: 2 }}>
                 <AlertTitle>Warnings</AlertTitle>
@@ -305,7 +343,6 @@ const AITrainingPlanImport: React.FC<AITrainingPlanImportProps> = ({
           </Box>
         )}
 
-        {/* Importing Step */}
         {step === 'importing' && (
           <Box sx={{ py: 4, textAlign: 'center' }}>
             <Typography variant="h6" gutterBottom>

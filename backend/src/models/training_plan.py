@@ -15,6 +15,7 @@ class SportType(str, enum.Enum):
     CYCLING = "cycling"
     SWIMMING = "swimming"
     TRIATHLON = "triathlon"
+    STRENGTH = "strength"
     GYM = "gym"
     OTHER = "other"
 
@@ -90,6 +91,11 @@ class Workout(Base):
     garmin_workout_id = Column(String, nullable=True)  # Garmin's workout ID
     garmin_synced_at = Column(DateTime, nullable=True)  # Last sync timestamp
     garmin_sync_status = Column(String, default="not_synced")  # not_synced, synced, failed, modified
+
+    # Intervals.icu sync tracking
+    icu_external_id = Column(String, nullable=True)  # external_id sent to ICU (stable upsert key)
+    icu_synced_at = Column(DateTime, nullable=True)
+    icu_sync_status = Column(String, default="not_synced")  # not_synced, synced, failed, modified
     
     # AI-generated structured workout (JSON format)
     structured_workout_json = Column(Text, nullable=True)  # JSON array of workout steps

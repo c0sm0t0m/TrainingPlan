@@ -3,6 +3,7 @@ Training Plan API Routes
 """
 from typing import List
 from datetime import date, datetime
+import json
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
@@ -487,6 +488,10 @@ async def create_workout(
             detail="Training plan not found"
         )
     
+    structured_json = None
+    if workout_data.structured_steps:
+        structured_json = json.dumps(workout_data.structured_steps)
+
     workout = Workout(
         training_plan_id=plan_id,
         date=workout_data.date,
@@ -498,6 +503,7 @@ async def create_workout(
         distance_km=workout_data.distance_km,
         intensity_zone=workout_data.intensity_zone.value if workout_data.intensity_zone else None,
         target_tss=workout_data.target_tss,
+        structured_workout_json=structured_json,
     )
     
     db.add(workout)

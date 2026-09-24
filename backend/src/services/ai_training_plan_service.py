@@ -3,7 +3,7 @@ AI Training Plan Import Service
 """
 import json
 from datetime import date, timedelta
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
@@ -19,6 +19,12 @@ from src.api.schemas.ai_training_plan import (
 from src.trainer_config.trainer_styles import (
     build_trainer_specific_prompt,
     get_detailed_workout_instructions
+)
+from src.services.ai_plan_phases import (
+    compute_plan_phases,
+    get_phase,
+    distance_session_ceilings,
+    format_pace_min_per_km,
 )
 
 
@@ -200,7 +206,7 @@ async def generate_ai_prompt(
         db: Database session
         
     Returns:
-        Dict containing prompt and context data
+        Dict containing prompt, context, and phase metadata
     """
     # Fetch user's recent activities (last 6 weeks)
     six_weeks_ago = date.today() - timedelta(days=42)
@@ -228,14 +234,11 @@ async def generate_ai_prompt(
     )
     latest_threshold = threshold_result.scalar_one_or_none()
     
-    # For CTL/ATL/TSB, we'd need to calculate them from all historical data
-    # For now, provide a simple estimate based on recent TSS
-    # (In production, these should come from a daily metrics table)
-    estimated_ctl = avg_weekly_tss * 6  # Rough estimate: 6 weeks of average weekly TSS
-    estimated_atl = total_tss / 6  # Last week's average
+    # Rough load estimates — labeled unreliable in the prompt (not true Banister CTL)
+    estimated_ctl = avg_weekly_tss * 6
+    estimated_atl = total_tss / 6
     estimated_tsb = estimated_ctl - estimated_atl
     
-    # Build athlete data
     athlete_data = {
         "recent_volume_km": round(total_distance_km, 1),
         "recent_duration_hours": round(total_duration_hours, 1),
@@ -243,10 +246,10 @@ async def generate_ai_prompt(
         "estimated_ctl": round(estimated_ctl, 1),
         "estimated_atl": round(estimated_atl, 1),
         "estimated_tsb": round(estimated_tsb, 1),
-        "activity_count": len(recent_activities)
+        "activity_count": len(recent_activities),
+        "ctl_reliable": False,
     }
     
-    # Add thresholds if available
     if latest_threshold:
         athlete_data["running_threshold_pace"] = latest_threshold.threshold_pace
         athlete_data["running_threshold_hr"] = latest_threshold.running_threshold_hr
@@ -254,7 +257,6 @@ async def generate_ai_prompt(
         athlete_data["max_hr"] = latest_threshold.max_hr
         athlete_data["resting_hr"] = latest_threshold.resting_hr
     
-    # Build event details
     event_details = {
         "name": config.event_name or "Target Event",
         "date": str(config.event_date) if config.event_date else "TBD",
@@ -262,71 +264,207 @@ async def generate_ai_prompt(
         "goal_time": config.goal_time or "Not specified"
     }
     
-    # Calculate plan duration
     if config.event_date:
         duration_days = (config.event_date - config.start_date).days
-        duration_weeks = duration_days // 7
+        duration_weeks = max(1, duration_days // 7)
+        end_date = config.event_date
     else:
-        duration_weeks = 16  # Default
+        duration_weeks = 16
+        end_date = config.start_date + timedelta(weeks=duration_weeks)
     
-    # Build plan config
+    generation_mode = getattr(config, "generation_mode", None) or "phased"
+    if generation_mode not in ("full", "phased"):
+        generation_mode = "phased"
+    
+    # Recommend phased for long plans (context limits)
+    recommended_mode = "phased" if duration_weeks > 16 else "full"
+    
+    phases = compute_plan_phases(config.start_date, end_date)
+    phase_index = getattr(config, "phase_index", None)
+    if generation_mode == "phased":
+        current = get_phase(phases, phase_index if phase_index is not None else 0)
+        if current is None:
+            current = phases[0] if phases else None
+    else:
+        current = None
+    
     plan_config = {
         "start_date": str(config.start_date),
-        "end_date": str(config.event_date) if config.event_date else str(config.start_date + timedelta(weeks=duration_weeks)),
+        "end_date": str(end_date),
         "duration_weeks": duration_weeks,
         "training_days_per_week": config.training_days_per_week,
         "preferred_training_days": config.preferred_training_days,
         "trainer_style": config.trainer_style,
         "custom_trainer_instructions": config.custom_trainer_instructions,
-        "additional_notes": config.additional_notes or ""
+        "additional_notes": config.additional_notes or "",
+        "generation_mode": generation_mode,
+        "phase_index": current["index"] if current else None,
     }
     
-    # Generate prompt
-    prompt = _build_prompt_text(athlete_data, event_details, plan_config)
+    prompt = _build_prompt_text(
+        athlete_data,
+        event_details,
+        plan_config,
+        phases=phases,
+        current_phase=current,
+    )
     
     return {
         "prompt": prompt,
         "athlete_data": athlete_data,
         "event_details": event_details,
-        "plan_config": plan_config
+        "plan_config": plan_config,
+        "generation_mode": generation_mode,
+        "phases": phases,
+        "current_phase": current,
+        "recommended_mode": recommended_mode,
     }
 
 
-def _build_prompt_text(athlete_data: Dict, event_details: Dict, plan_config: Dict) -> str:
-    """Build the full prompt text."""
-    
+def _build_prompt_text(
+    athlete_data: Dict,
+    event_details: Dict,
+    plan_config: Dict,
+    phases: Optional[List[Dict]] = None,
+    current_phase: Optional[Dict] = None,
+) -> str:
+    """Build the full prompt text (ICU structuredSteps–first)."""
+    phases = phases or []
+    mode = plan_config.get("generation_mode", "full")
+    ceilings = distance_session_ceilings(event_details.get("distance", ""))
+    preferred = ", ".join(plan_config["preferred_training_days"])
+    pace_str = format_pace_min_per_km(athlete_data.get("running_threshold_pace"))
+
+    # Scope dates for this generation
+    if mode == "phased" and current_phase:
+        scope_start = current_phase["startDate"]
+        scope_end = current_phase["endDate"]
+        scope_label = (
+            f"PHASE ONLY: {current_phase['name']} "
+            f"(weeks {current_phase['weekStart']}–{current_phase['weekEnd']}, "
+            f"{scope_start} → {scope_end})"
+        )
+        plan_name_hint = (
+            f"{event_details['name']} — {current_phase['name']} "
+            f"(Phase {current_phase['index'] + 1}/{len(phases)})"
+        )
+        workout_scope_rules = f"""
+━━━ THIS REQUEST SCOPE (PHASED GENERATION) ━━━
+Generate workouts ONLY for dates {scope_start} through {scope_end} inclusive.
+Do NOT emit workouts outside this window.
+JSON startDate/endDate MUST be {scope_start} / {scope_end}.
+Plan name MUST include the phase: "{plan_name_hint}"
+Include every preferred training day in this window ({plan_config['training_days_per_week']}/week on: {preferred}).
+Phase focus: {current_phase['focus']}
+Continue periodization consistently with the full-plan overview below
+(assume prior phases already exist; do not re-generate them).
+"""
+    else:
+        scope_start = plan_config["start_date"]
+        scope_end = plan_config["end_date"]
+        scope_label = f"FULL PLAN: {scope_start} → {scope_end} ({plan_config['duration_weeks']} weeks)"
+        plan_name_hint = f"{event_details['name']} Training Plan"
+        workout_scope_rules = f"""
+━━━ THIS REQUEST SCOPE (FULL PLAN) ━━━
+Generate the COMPLETE plan from {scope_start} through {scope_end}.
+Include ALL {plan_config['duration_weeks']} weeks with no gaps.
+{plan_config['training_days_per_week']} workouts/week on: {preferred}.
+If context limits prevent a complete valid JSON, respond with:
+{{"error":"context_limit","recommendedSplit":"phase"}}
+instead of truncated JSON.
+"""
+
+    phase_overview = ""
+    if phases:
+        phase_overview = "\n━━━ FULL PLAN PHASE OVERVIEW ━━━\n"
+        for p in phases:
+            marker = " ← CURRENT" if current_phase and p["index"] == current_phase["index"] else ""
+            phase_overview += (
+                f"  • Phase {p['index'] + 1}: {p['name']} — "
+                f"W{p['weekStart']}–W{p['weekEnd']} ({p['startDate']} → {p['endDate']}) — "
+                f"{p['focus']}{marker}\n"
+            )
+
+    # Thresholds block
+    thresholds_block = ""
+    if pace_str:
+        thresholds_block += f"\n  • Running threshold pace: {pace_str}"
+    elif athlete_data.get("running_threshold_pace"):
+        thresholds_block += (
+            "\n  • Running threshold pace: INVALID/MISSING — "
+            "use HR zones for run targets; do NOT invent absolute paces"
+        )
+    else:
+        thresholds_block += (
+            "\n  • Running threshold pace: not available — "
+            "use HR zones for run targets"
+        )
+    if athlete_data.get("running_threshold_hr"):
+        thresholds_block += f"\n  • Running threshold HR: {athlete_data['running_threshold_hr']} bpm"
+    if athlete_data.get("cycling_ftp"):
+        thresholds_block += f"\n  • Cycling FTP: {athlete_data['cycling_ftp']} watts"
+    if athlete_data.get("max_hr"):
+        thresholds_block += f"\n  • Max HR: {athlete_data['max_hr']} bpm"
+    if athlete_data.get("resting_hr"):
+        thresholds_block += f"\n  • Resting HR: {athlete_data['resting_hr']} bpm"
+
+    max_hr = athlete_data.get("max_hr") or 180
+    thr_hr = athlete_data.get("running_threshold_hr") or int(max_hr * 0.92)
+
+    notes_block = ""
+    if plan_config.get("additional_notes"):
+        notes_block = f"\n━━━ ADDITIONAL NOTES ━━━\n{plan_config['additional_notes']}\n"
+
+    trainer_prompt = build_trainer_specific_prompt(plan_config.get("trainer_style", "joe_friel"))
+    custom = plan_config.get("custom_trainer_instructions")
+    custom_block = ""
+    if custom:
+        custom_block = f"""
+
+━━━ CUSTOM TRAINING INSTRUCTIONS ━━━
+{custom}
+
+Apply these IN ADDITION TO the trainer methodology above.
+"""
+
+    detailed = get_detailed_workout_instructions()
+
     prompt = f"""━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🏃 AI TRAINING PLAN GENERATION PROMPT
+AI TRAINING PLAN GENERATION — KINESIS / INTERVALS.ICU
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-You are a professional endurance sports coach. Create a comprehensive, 
-periodized training plan based on the athlete data below.
+ROLE
+You are a professional endurance coach. Produce a periodized training plan as
+machine-parseable JSON for Kinesis (synced to Intervals.icu / Garmin).
 
+OUTPUT CONTRACT (NON-NEGOTIABLE)
+- Entire response = raw JSON only
+- First character: {{   Last character: }}
+- No markdown fences, no commentary, no partial workouts array
+- Root key MUST be "trainingPlan"
+- Every workout MUST include non-empty "structuredSteps"
+- "description" = short human notes only (1–2 sentences)
+- Session structure lives ONLY in structuredSteps
 
-━━━ ATHLETE FITNESS DATA (Last 6 Weeks) ━━━
+SCOPE: {scope_label}
+{workout_scope_rules}
+{phase_overview}
+
+━━━ ATHLETE (last 6 weeks) ━━━
+Use for load progression context. Do NOT invent missing metrics.
   • Total volume: {athlete_data['recent_volume_km']} km
-  • Total training time: {athlete_data['recent_duration_hours']} hours  
+  • Total training time: {athlete_data['recent_duration_hours']} hours
   • Average weekly TSS: {athlete_data['avg_weekly_tss']}
-  • CTL (Fitness): {athlete_data['estimated_ctl']}
-  • ATL (Fatigue): {athlete_data['estimated_atl']}
-  • TSB (Form): {athlete_data['estimated_tsb']}
   • Activities: {athlete_data['activity_count']}
+  • Rough load estimates (UNRELIABLE — ignore for periodization math):
+      CTL≈{athlete_data['estimated_ctl']}, ATL≈{athlete_data['estimated_atl']}, TSB≈{athlete_data['estimated_tsb']}
+  • Preserve recent capacity (~{athlete_data['recent_duration_hours'] / 6:.1f} h/week avg); do not dump volume suddenly
 
-━━━ CURRENT THRESHOLDS ━━━"""
-    
-    if 'running_threshold_pace' in athlete_data and athlete_data['running_threshold_pace']:
-        pace_min_per_km = athlete_data['running_threshold_pace'] / 60
-        prompt += f"\n  • Running threshold pace: {pace_min_per_km:.2f} min/km"
-    if 'running_threshold_hr' in athlete_data and athlete_data['running_threshold_hr']:
-        prompt += f"\n  • Running threshold HR: {athlete_data['running_threshold_hr']} bpm"
-    if 'cycling_ftp' in athlete_data and athlete_data['cycling_ftp']:
-        prompt += f"\n  • Cycling FTP: {athlete_data['cycling_ftp']} watts"
-    if 'max_hr' in athlete_data and athlete_data['max_hr']:
-        prompt += f"\n  • Max HR: {athlete_data['max_hr']} bpm"
-    if 'resting_hr' in athlete_data and athlete_data['resting_hr']:
-        prompt += f"\n  • Resting HR: {athlete_data['resting_hr']} bpm"
-    
-    prompt += f"""
+━━━ THRESHOLDS ━━━{thresholds_block}
+
+HR ZONES (approx from Max HR {max_hr}; threshold HR ~{thr_hr}):
+  Z1 <60% | Z2 60–75% | Z3 75–85% | Z4 85–92% | Z5 >92% HRmax
+BIKE (%FTP): Z1 <55% | Z2 56–75% | Z3/SS 76–90% | Z4 91–105% | Z5 >106%
 
 ━━━ TARGET EVENT ━━━
   • Event: {event_details['name']}
@@ -334,197 +472,122 @@ periodized training plan based on the athlete data below.
   • Distance: {event_details['distance']}
   • Goal time: {event_details['goal_time']}
 
-━━━ PLAN REQUIREMENTS ━━━
-  • Start date: {plan_config['start_date']}
-  • End date: {plan_config['end_date']}
-  • Duration: {plan_config['duration_weeks']} weeks
+━━━ PLAN WINDOW ━━━
+  • Full plan: {plan_config['start_date']} → {plan_config['end_date']} ({plan_config['duration_weeks']} weeks)
   • Training days/week: {plan_config['training_days_per_week']}
-  • Preferred days: {', '.join(plan_config['preferred_training_days'])}
-"""
-    
-    if plan_config['additional_notes']:
-        prompt += f"\n━━━ ADDITIONAL NOTES ━━━\n{plan_config['additional_notes']}\n"
-    
-    # Add trainer-specific methodology
-    trainer_style_id = plan_config.get('trainer_style', 'joe_friel')
-    trainer_prompt = build_trainer_specific_prompt(trainer_style_id)
-    prompt += trainer_prompt
-    
-    # Add custom trainer instructions if provided
-    custom_instructions = plan_config.get('custom_trainer_instructions')
-    if custom_instructions:
-        prompt += f"""
+  • Preferred days: {preferred}
+  • Days not listed = rest (omit workout objects on rest days)
+{notes_block}
+━━━ EVENT-SCALED SESSION CEILINGS ({ceilings['label']}) ━━━
+Do NOT exceed these routinely (trainer templates that cite full-IM loads must be scaled):
+  • Long bike: {ceilings['long_bike']}
+  • Brick: {ceilings['brick']}
+  • Race sim: {ceilings['race_sim']}
+  • Long run: {ceilings['long_run']}
+  • Heat: {ceilings['heat']}
 
-━━━ CUSTOM TRAINING INSTRUCTIONS ━━━
-{custom_instructions}
+{trainer_prompt}
+{custom_block}
+{detailed}
 
-⚠️  Apply these custom instructions IN ADDITION TO the trainer methodology above.
-"""
-    
-    # Add detailed workout instructions
-    detailed_instructions = get_detailed_workout_instructions()
-    prompt += detailed_instructions
-    
-    prompt += """
+Intensity distribution (polarized-leaning unless trainer says otherwise):
+  ~75–80% Z1–Z2 | ~15–20% Z3–Z4 | ≤5–8% Z5
+Recovery weeks every 3–4 hard weeks (−30–40% volume, keep 1 short quality session).
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📋 JSON OUTPUT FORMAT - CRITICAL!
+JSON OUTPUT FORMAT
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-🚨 CRITICAL INSTRUCTION: PRODUCE A DOWNLOADABLE JSON FILE! 🚨
-
-Your response will be SAVED AS A .JSON FILE by the user.
-This means your output must be 100% VALID, PURE JSON.
-
-⚠️  YOUR ENTIRE RESPONSE = THE CONTENTS OF THE .JSON FILE
-
-✅ CORRECT OUTPUT (DOWNLOADABLE JSON):
-   • First character: {{
-   • Last character: }}
-   • NOTHING ELSE - no explanations, no markdown, no commentary
-
-❌ WRONG OUTPUT (NOT DOWNLOADABLE):
-   • Starting with "Here's the JSON:" ❌
-   • Wrapping in ```json or ``` markdown ❌
-   • Adding explanations before/after ❌
-   • Outputting just the workouts array ❌
-   • Including comments or notes ❌
-
-━━━ HOW TO FORMAT YOUR RESPONSE ━━━
-
-Imagine the user will click "Download" on your response.
-The file must open correctly in a JSON viewer.
-
-✅ First line MUST be: {{ "trainingPlan": {{
-✅ Last line MUST be: }} }}
-✅ NO text before the opening {{
-✅ NO text after the closing }}
-
-REQUIRED JSON STRUCTURE:
+REQUIRED STRUCTURE (example pattern — expand to all workouts in scope):
 
 {{
   "trainingPlan": {{
-    "name": "YOUR PLAN NAME HERE",
-    "description": "YOUR PLAN DESCRIPTION HERE",
-    "startDate": "{plan_config['start_date']}",
-    "endDate": "{plan_config['end_date']}",
+    "name": "{plan_name_hint}",
+    "description": "2–3 sentence overview for this generation scope",
+    "startDate": "{scope_start}",
+    "endDate": "{scope_end}",
     "sportType": "triathlon",
     "targetEvent": "{event_details['name']}",
     "workouts": [
       {{
         "date": "YYYY-MM-DD",
-        "title": "Workout Title",
-        "description": "Detailed workout description with warmup/intervals/cooldown",
-        "sportType": "running",
-        "workoutType": "easy",
-        "durationMinutes": 45,
-        "intensityZone": "zone2",
-        "targetTSS": 40,
-        "distanceKm": 7.5
-      }},
-      {{
-        "date": "YYYY-MM-DD",
-        "title": "Bike Threshold Intervals",
-        "description": "Warmup: 15min easy spinning\\nMain: 3x12min at FTP with 5min recovery\\nCooldown: 10min easy",
+        "title": "Aerobic Z2 Bike",
+        "description": "Steady endurance; smooth cadence",
         "sportType": "cycling",
-        "workoutType": "interval",
+        "workoutType": "easy",
         "durationMinutes": 90,
-        "intensityZone": "zone4",
-        "targetTSS": 75,
-        "distanceKm": 35
+        "intensityZone": "zone2",
+        "targetTSS": 55,
+        "distanceKm": 42.0,
+        "structuredSteps": [
+          {{
+            "stepOrder": 1,
+            "stepType": "warmup",
+            "durationType": "time",
+            "durationValue": 15,
+            "durationUnit": "minutes",
+            "targetType": "power",
+            "targetValueLow": 50,
+            "targetValueHigh": 60,
+            "targetUnit": "%ftp",
+            "description": "Easy spin"
+          }},
+          {{
+            "stepOrder": 2,
+            "stepType": "work",
+            "durationType": "time",
+            "durationValue": 60,
+            "durationUnit": "minutes",
+            "targetType": "power",
+            "targetValueLow": 65,
+            "targetValueHigh": 75,
+            "targetUnit": "%ftp",
+            "description": "Z2 endurance"
+          }},
+          {{
+            "stepOrder": 3,
+            "stepType": "cooldown",
+            "durationType": "time",
+            "durationValue": 15,
+            "durationUnit": "minutes",
+            "targetType": "power",
+            "targetValueLow": 45,
+            "targetValueHigh": 55,
+            "targetUnit": "%ftp"
+          }}
+        ]
       }}
     ]
   }}
 }}
 
-━━━ FIELD REFERENCE ━━━
+For intervals (e.g. 3×15' sweetspot): EXPAND to sequential work/rest steps
+(~88–92% FTP work, 45–55% rest) plus warmup/cooldown.
 
-Plan metadata (ALL REQUIRED):
-  • name: descriptive plan name (e.g., "16-Week Marathon Build")
-  • description: 2-3 sentence overview of plan approach
-  • startDate: "{plan_config['start_date']}" (YYYY-MM-DD format)
-  • endDate: "{plan_config['end_date']}" (YYYY-MM-DD format)
-  • sportType: "triathlon" OR "running" OR "cycling" OR "swimming"
-  • targetEvent: "{event_details['name']}"
-  • workouts: [array of workout objects]
+FIELD RULES
+- Plan required: name, description, startDate, endDate, sportType, targetEvent, workouts
+- Workout required: date, title, sportType, workoutType, durationMinutes, targetTSS, structuredSteps
+- Optional: description, distanceKm, intensityZone, notes
+- sportType: running|cycling|swimming|strength|triathlon
+- workoutType: easy|tempo|interval|long|recovery|race|brick|strength
+- Numbers are JSON numbers (not strings); dates YYYY-MM-DD; no trailing commas
 
-Each workout object (REQUIRED FIELDS):
-  • date: "YYYY-MM-DD" (must be between start and end dates)
-  • title: short workout name (e.g., "Long Run with MP Finish")
-  • sportType: "running" / "cycling" / "swimming" / "strength" / "triathlon"
-  • workoutType: "easy" / "tempo" / "interval" / "long" / "recovery" / "race"
-  • durationMinutes: integer (total workout time)
-  • targetTSS: integer (Training Stress Score - lowercase 'ss'!)
+VALIDATION CHECKLIST
+  [ ] Pure JSON only
+  [ ] trainingPlan wrapper
+  [ ] Workouts only in scope dates; preferred days covered
+  [ ] Every workout has structuredSteps length ≥ 2
+  [ ] Bike steps use %ftp; run steps use bpm (or pace if provided)
+  [ ] Sessions respect event-scaled ceilings above
 
-Each workout object (OPTIONAL BUT RECOMMENDED):
-  • description: detailed instructions (warmup, main set, cooldown, notes)
-  • distanceKm: float (planned distance in kilometers)
-  • intensityZone: "zone1" / "zone2" / "zone3" / "zone4" / "zone5"
+WHAT THE USER WILL DO
+1. Save your entire response as a .json file
+2. Upload to Kinesis → Import AI Plan (phase files can be merged)
+3. Sync to Intervals.icu (uses structuredSteps)
 
-━━━ CRITICAL DATA TYPE RULES ━━━
-
-✅ CORRECT:
-  "durationMinutes": 60      ← number (no quotes)
-  "targetTSS": 45            ← number (no quotes)
-  "distanceKm": 10.5         ← number (no quotes)
-  "date": "2024-01-15"       ← string (with quotes)
-
-❌ WRONG:
-  "durationMinutes": "60"    ← string (has quotes) - BREAKS IMPORT!
-  "targetTSS": "45"          ← string (has quotes) - BREAKS IMPORT!
-
-━━━ WORKOUT DISTRIBUTION RULES ━━━
-
-✅ Plan MUST include:
-  • ALL {plan_config['duration_weeks']} weeks (no gaps)
-  • {plan_config['training_days_per_week']} workouts per week
-  • Workouts on preferred days: {', '.join(plan_config['preferred_training_days'])}
-  • Progressive build with periodization phases
-  • Explicit taper phase (final 2-3 weeks before race)
-  • Recovery weeks every 3-4 weeks
-
-✅ Workout descriptions MUST include:
-  • Warmup details (duration, intensity)
-  • Main workout specifics (e.g., "5x1000m at threshold pace with 400m jog recovery")
-  • Cooldown details (duration, intensity)
-  • Notes (e.g., "Focus on negative splits", "Practice race nutrition")
-
-━━━ VALIDATION CHECKLIST ━━━
-
-Before submitting, verify:
-  ✅ First character is: {{
-  ✅ Last character is: }}
-  ✅ NO markdown fences (```)
-  ✅ NO explanatory text before/after JSON
-  ✅ ALL dates in YYYY-MM-DD format
-  ✅ ALL numeric fields are numbers (not strings)
-  ✅ NO trailing commas
-  ✅ All {plan_config['duration_weeks']} weeks have workouts
-  ✅ Workouts progress logically (base → build → peak → taper)
-  ✅ Each workout has detailed description
-  ✅ Taper phase explicitly included
-
-━━━ EXAMPLE OF WHAT USER WILL DO ━━━
-
-1. User copies your ENTIRE response
-2. User saves as "training_plan.json"
-3. User uploads to Kinesis platform
-4. System parses JSON and creates workouts
-
-If your JSON is malformed, the import FAILS.
-If you add text before/after JSON, the import FAILS.
-If you use wrong data types, the import FAILS.
-
-🎯 YOUR MISSION: Produce a PERFECT, DOWNLOADABLE JSON FILE!
-
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-Generate the complete training plan now.
-
-🚨 REMINDER: Your response IS the .json file contents!
-    First character: {{
-    Last character: }}
-    NOTHING ELSE!
+MISSION: Emit valid downloadable JSON with structuredSteps on every workout.
+First character: {{
+Last character: }}
+NOTHING ELSE!
 """
-    
     return prompt

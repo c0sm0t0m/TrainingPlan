@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -17,6 +17,12 @@ import {
   AlertTitle,
   Chip,
   Stack,
+  ToggleButton,
+  ToggleButtonGroup,
+  List,
+  ListItem,
+  ListItemIcon,
+  ListItemText,
 } from '@mui/material';
 import {
   ArrowBack as ArrowBackIcon,
@@ -24,11 +30,21 @@ import {
   OpenInNew as OpenInNewIcon,
   AutoAwesome as AutoAwesomeIcon,
   Check as CheckIcon,
+  CheckCircle as CheckCircleIcon,
+  RadioButtonUnchecked as RadioButtonUncheckedIcon,
 } from '@mui/icons-material';
 import { useNavigate } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
 import api from '../services/api';
-import { generateAIPrompt, PromptGenerationConfig, getTrainerStyles, getTrainerStyleDetails, TrainerStyle, TrainerStyleDetail } from '../services/aiTrainingPlan';
+import {
+  generateAIPrompt,
+  PromptGenerationConfig,
+  getTrainerStyles,
+  getTrainerStyleDetails,
+  TrainerStyle,
+  TrainerStyleDetail,
+  PlanPhaseInfo,
+} from '../services/aiTrainingPlan';
 
 interface Event {
   id: number;
@@ -39,10 +55,8 @@ interface Event {
 }
 
 const AITrainingPlanGenerator: React.FC = () => {
-  console.log('[AITrainingPlanGenerator] Component rendering');
   const navigate = useNavigate();
   const { user } = useAuthStore();
-  console.log('[AITrainingPlanGenerator] User from store:', user);
   const [activeStep, setActiveStep] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -50,7 +64,6 @@ const AITrainingPlanGenerator: React.FC = () => {
   const [generatedPrompt, setGeneratedPrompt] = useState<string>('');
   const [copied, setCopied] = useState(false);
 
-  // Form state
   const [selectedEventId, setSelectedEventId] = useState<number | null>(null);
   const [eventName, setEventName] = useState('');
   const [eventDate, setEventDate] = useState('');
@@ -66,33 +79,46 @@ const AITrainingPlanGenerator: React.FC = () => {
   const [showTrainerDetails, setShowTrainerDetails] = useState(false);
   const [additionalNotes, setAdditionalNotes] = useState('');
 
+  const [generationMode, setGenerationMode] = useState<'full' | 'phased'>('phased');
+  const [phases, setPhases] = useState<PlanPhaseInfo[]>([]);
+  const [currentPhaseIndex, setCurrentPhaseIndex] = useState(0);
+  const [completedPhaseIndexes, setCompletedPhaseIndexes] = useState<number[]>([]);
+  const [recommendedMode, setRecommendedMode] = useState<'full' | 'phased'>('phased');
+
   const steps = ['Select Event', 'Configure Plan', 'Choose Trainer Style', 'Get Prompt'];
   const weekDays = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+
+  const estimatedWeeks = useMemo(() => {
+    if (!startDate || !eventDate) return null;
+    const start = new Date(startDate);
+    const end = new Date(eventDate);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) return null;
+    return Math.max(1, Math.floor((end.getTime() - start.getTime()) / (7 * 24 * 60 * 60 * 1000)));
+  }, [startDate, eventDate]);
 
   useEffect(() => {
     document.title = 'AI Training Plan Generator - Kinesis';
   }, []);
 
   useEffect(() => {
-    console.log('[AITrainingPlanGenerator] useEffect triggered, user:', user);
     if (!user) {
-      console.log('[AITrainingPlanGenerator] No user, redirecting to login');
       navigate('/login');
       return;
     }
-    console.log('[AITrainingPlanGenerator] User authenticated, fetching events and trainer styles');
     fetchEvents();
     fetchTrainerStyles();
-    
-    // Set default start date to next Monday
     const nextMonday = getNextMonday();
     setStartDate(nextMonday.toISOString().split('T')[0]);
-    console.log('[AITrainingPlanGenerator] Default start date set to:', nextMonday.toISOString().split('T')[0]);
   }, [user, navigate]);
 
-  // Early return if no user to prevent flash of content
+  useEffect(() => {
+    if (estimatedWeeks != null) {
+      const rec = estimatedWeeks > 16 ? 'phased' : 'full';
+      setRecommendedMode(rec);
+    }
+  }, [estimatedWeeks]);
+
   if (!user) {
-    console.log('[AITrainingPlanGenerator] Rendering null (no user)');
     return null;
   }
 
@@ -107,9 +133,7 @@ const AITrainingPlanGenerator: React.FC = () => {
 
   const fetchEvents = async () => {
     try {
-      console.log('[AITrainingPlanGenerator] Fetching events...');
       const response = await api.get('/events');
-      console.log('[AITrainingPlanGenerator] Events loaded:', response.data?.length || 0, 'events');
       setEvents(response.data);
     } catch (err: any) {
       console.error('[AITrainingPlanGenerator] Failed to load events:', err);
@@ -118,23 +142,12 @@ const AITrainingPlanGenerator: React.FC = () => {
 
   const fetchTrainerStyles = async () => {
     try {
-      console.log('[AITrainingPlanGenerator] Fetching trainer styles from API...');
       const styles = await getTrainerStyles();
-      console.log('[AITrainingPlanGenerator] Trainer styles API response:', styles);
-      console.log('[AITrainingPlanGenerator] Trainer styles count:', styles?.length || 0);
       if (styles && Array.isArray(styles) && styles.length > 0) {
         setTrainerStyles(styles);
-        console.log('[AITrainingPlanGenerator] ✅ Trainer styles set in state:', styles.length);
-      } else {
-        console.error('[AITrainingPlanGenerator] ❌ No trainer styles received or invalid format');
       }
     } catch (err: any) {
-      console.error('[AITrainingPlanGenerator] ❌ Failed to load trainer styles:', err);
-      console.error('[AITrainingPlanGenerator] Error details:', {
-        message: err.message,
-        response: err.response?.data,
-        status: err.response?.status
-      });
+      console.error('[AITrainingPlanGenerator] Failed to load trainer styles:', err);
     }
   };
 
@@ -149,7 +162,7 @@ const AITrainingPlanGenerator: React.FC = () => {
 
   const handleEventSelect = (eventId: number) => {
     setSelectedEventId(eventId);
-    const event = events.find(e => e.id === eventId);
+    const event = events.find((e) => e.id === eventId);
     if (event) {
       setEventName(event.name);
       setEventDate(event.event_date);
@@ -158,46 +171,55 @@ const AITrainingPlanGenerator: React.FC = () => {
     }
   };
 
+  const buildConfig = (phaseIndex?: number): PromptGenerationConfig => ({
+    targetEventId: selectedEventId || undefined,
+    eventName: eventName || undefined,
+    eventDate: eventDate || undefined,
+    eventDistance: eventDistance || undefined,
+    goalTime: goalTime || undefined,
+    startDate,
+    trainingDaysPerWeek,
+    preferredTrainingDays: preferredDays,
+    trainerStyle: selectedTrainerStyle,
+    customTrainerInstructions: customTrainerInstructions || undefined,
+    additionalNotes: additionalNotes || undefined,
+    generationMode,
+    phaseIndex: generationMode === 'phased' ? phaseIndex ?? currentPhaseIndex : undefined,
+  });
+
+  const runGenerate = async (phaseIndex?: number) => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await generateAIPrompt(buildConfig(phaseIndex));
+      setGeneratedPrompt(response.prompt);
+      setPhases(response.phases || []);
+      setRecommendedMode(response.recommendedMode || 'phased');
+      if (response.currentPhase) {
+        setCurrentPhaseIndex(response.currentPhase.index);
+      }
+      if (activeStep < 4) {
+        setActiveStep(4);
+      }
+    } catch (err: any) {
+      const errorDetail = err.response?.data?.detail;
+      let errorMessage = 'Failed to generate prompt';
+      if (typeof errorDetail === 'string') {
+        errorMessage = errorDetail;
+      } else if (errorDetail && typeof errorDetail === 'object') {
+        errorMessage = JSON.stringify(errorDetail);
+      } else if (err.message) {
+        errorMessage = err.message;
+      }
+      setError(errorMessage);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleNext = async () => {
     if (activeStep === 3) {
-      // Generate prompt
-      setLoading(true);
-      setError(null);
-      
-      try {
-        const config: PromptGenerationConfig = {
-          targetEventId: selectedEventId || undefined,
-          eventName: eventName || undefined,
-          eventDate: eventDate || undefined,
-          eventDistance: eventDistance || undefined,
-          goalTime: goalTime || undefined,
-          startDate,
-          trainingDaysPerWeek,
-          preferredTrainingDays: preferredDays,
-          trainerStyle: selectedTrainerStyle,
-          customTrainerInstructions: customTrainerInstructions || undefined,
-          additionalNotes: additionalNotes || undefined,
-        };
-        
-        const response = await generateAIPrompt(config);
-        setGeneratedPrompt(response.prompt);
-        setActiveStep(activeStep + 1);
-      } catch (err: any) {
-        const errorDetail = err.response?.data?.detail;
-        let errorMessage = 'Failed to generate prompt';
-        
-        if (typeof errorDetail === 'string') {
-          errorMessage = errorDetail;
-        } else if (errorDetail && typeof errorDetail === 'object') {
-          errorMessage = JSON.stringify(errorDetail);
-        } else if (err.message) {
-          errorMessage = err.message;
-        }
-        
-        setError(errorMessage);
-      } finally {
-        setLoading(false);
-      }
+      await runGenerate(generationMode === 'phased' ? 0 : undefined);
     } else {
       setActiveStep(activeStep + 1);
     }
@@ -213,17 +235,34 @@ const AITrainingPlanGenerator: React.FC = () => {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const markPhaseDoneAndAdvance = async () => {
+    const done = Array.from(new Set([...completedPhaseIndexes, currentPhaseIndex]));
+    setCompletedPhaseIndexes(done);
+    const next = currentPhaseIndex + 1;
+    if (next < phases.length) {
+      await runGenerate(next);
+    }
+  };
+
+  const selectPhase = async (index: number) => {
+    await runGenerate(index);
+  };
+
   const handleDayToggle = (day: string) => {
     if (preferredDays.includes(day)) {
       if (preferredDays.length > 3) {
-        setPreferredDays(preferredDays.filter(d => d !== day));
+        setPreferredDays(preferredDays.filter((d) => d !== day));
       }
     } else {
       setPreferredDays([...preferredDays, day]);
     }
   };
 
-  console.log('[AITrainingPlanGenerator] Rendering container, activeStep:', activeStep);
+  const currentPhase = phases.find((p) => p.index === currentPhaseIndex) || null;
+  const allPhasesDone =
+    generationMode === 'phased' &&
+    phases.length > 0 &&
+    phases.every((p) => completedPhaseIndexes.includes(p.index));
 
   return (
     <Container maxWidth="lg" sx={{ mt: 4, mb: 4 }}>
@@ -245,7 +284,7 @@ const AITrainingPlanGenerator: React.FC = () => {
       )}
 
       <Paper sx={{ p: 3 }}>
-        <Stepper activeStep={activeStep} sx={{ mb: 4 }}>
+        <Stepper activeStep={Math.min(activeStep, 3)} sx={{ mb: 4 }}>
           {steps.map((label) => (
             <Step key={label}>
               <StepLabel>{label}</StepLabel>
@@ -253,7 +292,6 @@ const AITrainingPlanGenerator: React.FC = () => {
           ))}
         </Stepper>
 
-        {/* Step 1: Select Event */}
         {activeStep === 0 && (
           <Box>
             <Typography variant="h6" gutterBottom>
@@ -306,7 +344,7 @@ const AITrainingPlanGenerator: React.FC = () => {
             <TextField
               label="Target Distance"
               fullWidth
-              placeholder="e.g., Marathon, Half Marathon, 10K"
+              placeholder="e.g., Ironman 70.3, Olympic, Marathon"
               value={eventDistance}
               onChange={(e) => setEventDistance(e.target.value)}
               sx={{ mb: 2 }}
@@ -315,7 +353,7 @@ const AITrainingPlanGenerator: React.FC = () => {
             <TextField
               label="Goal Time"
               fullWidth
-              placeholder="e.g., 3:30:00"
+              placeholder="e.g., 4:50"
               value={goalTime}
               onChange={(e) => setGoalTime(e.target.value)}
               sx={{ mb: 2 }}
@@ -323,14 +361,13 @@ const AITrainingPlanGenerator: React.FC = () => {
           </Box>
         )}
 
-        {/* Step 2: Configure Plan */}
         {activeStep === 1 && (
           <Box>
             <Typography variant="h6" gutterBottom>
               Configure Training Plan
             </Typography>
             <Typography variant="body2" color="text.secondary" sx={{ mb: 3 }}>
-              Set your training preferences and constraints
+              Set your training preferences and how to generate the prompt
             </Typography>
 
             <TextField
@@ -352,7 +389,9 @@ const AITrainingPlanGenerator: React.FC = () => {
                 onChange={(e) => setTrainingDaysPerWeek(e.target.value as number)}
               >
                 {[3, 4, 5, 6, 7].map((days) => (
-                  <MenuItem key={days} value={days}>{days} days</MenuItem>
+                  <MenuItem key={days} value={days}>
+                    {days} days
+                  </MenuItem>
                 ))}
               </Select>
             </FormControl>
@@ -375,6 +414,29 @@ const AITrainingPlanGenerator: React.FC = () => {
               Select at least 3 days. AI will distribute workouts across these days.
             </Typography>
 
+            <Typography variant="subtitle2" gutterBottom>
+              Generation mode
+            </Typography>
+            <ToggleButtonGroup
+              exclusive
+              value={generationMode}
+              onChange={(_, v) => v && setGenerationMode(v)}
+              sx={{ mb: 1 }}
+            >
+              <ToggleButton value="phased">Phase by phase</ToggleButton>
+              <ToggleButton value="full">Full plan (one prompt)</ToggleButton>
+            </ToggleButtonGroup>
+            <Alert severity={recommendedMode === 'phased' ? 'info' : 'success'} sx={{ mb: 3 }}>
+              {estimatedWeeks != null && (
+                <>
+                  Plan length ≈ <strong>{estimatedWeeks} weeks</strong>.{' '}
+                </>
+              )}
+              {recommendedMode === 'phased'
+                ? 'Recommended: generate one phase at a time, then merge JSON files on import. Long plans often truncate in a single chat response.'
+                : 'A single prompt should work for shorter plans. You can still switch to phase-by-phase if the model truncates.'}
+            </Alert>
+
             <TextField
               label="Additional Notes/Constraints"
               fullWidth
@@ -387,7 +449,6 @@ const AITrainingPlanGenerator: React.FC = () => {
           </Box>
         )}
 
-        {/* Step 3: Choose Trainer Style */}
         {activeStep === 2 && (
           <Box>
             <Typography variant="h6" gutterBottom>
@@ -411,19 +472,21 @@ const AITrainingPlanGenerator: React.FC = () => {
                   <MenuItem key={trainer.id} value={trainer.id}>
                     <Box>
                       <Typography variant="body1">{trainer.name}</Typography>
-                      <Typography variant="caption" color="text.secondary">{trainer.tagline}</Typography>
+                      <Typography variant="caption" color="text.secondary">
+                        {trainer.tagline}
+                      </Typography>
                     </Box>
                   </MenuItem>
                 ))}
               </Select>
             </FormControl>
 
-            {trainerStyles.find(t => t.id === selectedTrainerStyle) && (
+            {trainerStyles.find((t) => t.id === selectedTrainerStyle) && (
               <Alert severity="info" sx={{ mb: 3 }}>
                 <AlertTitle>
-                  {trainerStyles.find(t => t.id === selectedTrainerStyle)?.name}
+                  {trainerStyles.find((t) => t.id === selectedTrainerStyle)?.name}
                 </AlertTitle>
-                {trainerStyles.find(t => t.id === selectedTrainerStyle)?.description}
+                {trainerStyles.find((t) => t.id === selectedTrainerStyle)?.description}
               </Alert>
             )}
 
@@ -443,12 +506,20 @@ const AITrainingPlanGenerator: React.FC = () => {
 
             {showTrainerDetails && trainerStyleDetails && (
               <Paper sx={{ p: 2, bgcolor: 'grey.50', mb: 3, maxHeight: 300, overflow: 'auto' }}>
-                <Typography variant="subtitle2" gutterBottom>Training Philosophy:</Typography>
-                <Typography variant="body2" component="pre" sx={{ whiteSpace: 'pre-wrap', mb: 2, fontSize: '0.85rem' }}>
+                <Typography variant="subtitle2" gutterBottom>
+                  Training Philosophy:
+                </Typography>
+                <Typography
+                  variant="body2"
+                  component="pre"
+                  sx={{ whiteSpace: 'pre-wrap', mb: 2, fontSize: '0.85rem' }}
+                >
                   {trainerStyleDetails.philosophy}
                 </Typography>
-                
-                <Typography variant="subtitle2" gutterBottom>Key Workouts:</Typography>
+
+                <Typography variant="subtitle2" gutterBottom>
+                  Key Workouts:
+                </Typography>
                 <Box component="ul" sx={{ pl: 2, mb: 2 }}>
                   {trainerStyleDetails.key_workouts.map((workout, idx) => (
                     <Typography component="li" variant="body2" key={idx} sx={{ fontSize: '0.85rem' }}>
@@ -469,40 +540,92 @@ const AITrainingPlanGenerator: React.FC = () => {
               fullWidth
               multiline
               rows={6}
-              placeholder="e.g., Focus more on hill training, prefer shorter high-intensity intervals, include swimming-specific drills..."
+              placeholder="e.g., Focus more on hill training, prefer shorter high-intensity intervals..."
               value={customTrainerInstructions}
               onChange={(e) => setCustomTrainerInstructions(e.target.value)}
               sx={{ mb: 2 }}
             />
-            <Typography variant="caption" color="text.secondary">
-              💡 Tip: Your custom instructions will be applied IN ADDITION TO the selected trainer methodology.
-            </Typography>
           </Box>
         )}
 
-        {/* Step 4: Get Prompt */}
         {activeStep === 3 && !generatedPrompt && (
           <Box sx={{ textAlign: 'center', py: 4 }}>
             <Typography variant="h6" gutterBottom>
               Ready to Generate Prompt
             </Typography>
             <Typography variant="body2" color="text.secondary">
-              Click "Generate Prompt" to create your personalized AI training plan prompt
+              {generationMode === 'phased'
+                ? 'You’ll get Phase 1 first, then step through remaining phases.'
+                : 'One prompt will cover the full plan date range.'}
             </Typography>
           </Box>
         )}
 
-        {/* Step 5: Show Prompt */}
         {activeStep === 4 && (
           <Box>
+            {generationMode === 'phased' && phases.length > 0 && (
+              <Paper variant="outlined" sx={{ p: 2, mb: 3 }}>
+                <Typography variant="subtitle1" gutterBottom>
+                  Phase progress
+                </Typography>
+                <List dense>
+                  {phases.map((phase) => {
+                    const done = completedPhaseIndexes.includes(phase.index);
+                    const active = phase.index === currentPhaseIndex;
+                    return (
+                      <ListItem
+                        key={phase.id}
+                        secondaryAction={
+                          <Button size="small" onClick={() => selectPhase(phase.index)} disabled={loading}>
+                            {active ? 'Current' : 'Load'}
+                          </Button>
+                        }
+                      >
+                        <ListItemIcon sx={{ minWidth: 36 }}>
+                          {done ? (
+                            <CheckCircleIcon color="success" fontSize="small" />
+                          ) : (
+                            <RadioButtonUncheckedIcon
+                              color={active ? 'primary' : 'disabled'}
+                              fontSize="small"
+                            />
+                          )}
+                        </ListItemIcon>
+                        <ListItemText
+                          primary={`${phase.name} (W${phase.weekStart}–W${phase.weekEnd})`}
+                          secondary={`${phase.startDate} → ${phase.endDate} · ${phase.focus}`}
+                          primaryTypographyProps={{ fontWeight: active ? 700 : 400 }}
+                        />
+                      </ListItem>
+                    );
+                  })}
+                </List>
+                {currentPhase && (
+                  <Alert severity="info" sx={{ mt: 1 }}>
+                    Working on <strong>{currentPhase.name}</strong>. Copy prompt → AI → save as{' '}
+                    <code>phase_{currentPhase.index + 1}_{currentPhase.name.toLowerCase().replace(/\s+/g, '_')}.json</code>
+                    , then mark done and continue.
+                  </Alert>
+                )}
+              </Paper>
+            )}
+
             <Alert severity="info" sx={{ mb: 3 }}>
-              <AlertTitle>How to use this prompt</AlertTitle>
+              <AlertTitle>How to use this prompt (Gemini recommended)</AlertTitle>
               <ol style={{ margin: 0, paddingLeft: 20 }}>
                 <li>Copy the prompt below</li>
-                <li>Open ChatGPT or Claude AI</li>
-                <li>Paste and send the prompt</li>
-                <li>Wait for AI response (JSON format)</li>
-                <li>Copy the JSON and go to Plans → Import AI Plan</li>
+                <li>Open Gemini (or ChatGPT / Claude)</li>
+                <li>Paste and send — ask for a downloadable .json file if offered</li>
+                <li>
+                  Save the response as a .json file
+                  {generationMode === 'phased' ? ' (one file per phase)' : ''}
+                </li>
+                <li>
+                  Plans → Import AI Plan
+                  {generationMode === 'phased'
+                    ? ' → select all phase files to merge'
+                    : ' → upload the file'}
+                </li>
               </ol>
             </Alert>
 
@@ -521,7 +644,7 @@ const AITrainingPlanGenerator: React.FC = () => {
               </Typography>
             </Paper>
 
-            <Stack direction="row" spacing={2}>
+            <Stack direction="row" spacing={2} flexWrap="wrap" useFlexGap sx={{ gap: 1 }}>
               <Button
                 variant="contained"
                 startIcon={copied ? <CheckIcon /> : <ContentCopyIcon />}
@@ -529,6 +652,13 @@ const AITrainingPlanGenerator: React.FC = () => {
                 color={copied ? 'success' : 'primary'}
               >
                 {copied ? 'Copied!' : 'Copy to Clipboard'}
+              </Button>
+              <Button
+                variant="outlined"
+                startIcon={<OpenInNewIcon />}
+                onClick={() => window.open('https://gemini.google.com/app', '_blank')}
+              >
+                Open Gemini
               </Button>
               <Button
                 variant="outlined"
@@ -544,21 +674,49 @@ const AITrainingPlanGenerator: React.FC = () => {
               >
                 Open Claude
               </Button>
+              {generationMode === 'phased' && currentPhase && !currentPhase.isLast && (
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  disabled={loading}
+                  onClick={markPhaseDoneAndAdvance}
+                >
+                  Mark phase done → next
+                </Button>
+              )}
+              {generationMode === 'phased' && currentPhase?.isLast && (
+                <Button
+                  variant="contained"
+                  color="secondary"
+                  disabled={loading}
+                  onClick={() =>
+                    setCompletedPhaseIndexes(
+                      Array.from(new Set([...completedPhaseIndexes, currentPhaseIndex]))
+                    )
+                  }
+                >
+                  Mark final phase done
+                </Button>
+              )}
             </Stack>
 
+            {allPhasesDone && (
+              <Alert severity="success" sx={{ mt: 3 }}>
+                <AlertTitle>All phases prompted</AlertTitle>
+                Import all phase .json files together on the Plans page (multi-select merges them into one plan).
+              </Alert>
+            )}
+
             <Alert severity="success" sx={{ mt: 3 }}>
-              <AlertTitle>Next Steps</AlertTitle>
-              Once you have the JSON response from the AI:
+              <AlertTitle>Next steps</AlertTitle>
               <ul style={{ margin: '8px 0 0 0', paddingLeft: 20 }}>
-                <li>Go to Plans tab</li>
-                <li>Click "Import AI Plan"</li>
-                <li>Upload the JSON file</li>
+                <li>File must start with {'{'} and every workout needs structuredSteps</li>
+                <li>Phase files: Import AI Plan → select multiple .json files to merge</li>
               </ul>
             </Alert>
           </Box>
         )}
 
-        {/* Navigation Buttons */}
         <Box sx={{ display: 'flex', justifyContent: 'space-between', mt: 4 }}>
           <Button onClick={handleBack} disabled={activeStep === 0 || activeStep === 4}>
             Back
@@ -578,7 +736,11 @@ const AITrainingPlanGenerator: React.FC = () => {
                   (activeStep === 1 && (!startDate || preferredDays.length < 3))
                 }
               >
-                {activeStep === 3 ? 'Generate Prompt' : 'Next'}
+                {activeStep === 3
+                  ? generationMode === 'phased'
+                    ? 'Generate Phase 1'
+                    : 'Generate Prompt'
+                  : 'Next'}
               </Button>
             )}
           </Box>

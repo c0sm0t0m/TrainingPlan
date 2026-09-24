@@ -195,8 +195,47 @@ export default function MobileWeekGrid({
                 overflow: 'hidden',
               }}
             >
-              {/* Planned Workouts */}
-              {dayWorkouts.slice(0, 3).map((workout) => {
+              {/* Completed Activities first (always visible — not crowded out by plans) */}
+              {dayActivities.slice(0, 3).map((activity) => {
+                const sportColor = getSportColor(activity.activity_type).main;
+                
+                return (
+                  <Box
+                    key={`activity-${activity.id}`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onActivityClick(activity);
+                    }}
+                    sx={{
+                      position: 'relative',
+                      width: 28,
+                      height: 28,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      borderRadius: '50%',
+                      bgcolor: alpha(sportColor, 0.25),
+                      border: `2px solid ${sportColor}`,
+                      color: sportColor,
+                      cursor: 'pointer',
+                      '& svg': {
+                        fontSize: '0.875rem',
+                      },
+                      '&:hover': {
+                        opacity: 0.9,
+                      },
+                      '&:active': {
+                        transform: 'scale(0.9)',
+                      },
+                    }}
+                  >
+                    {getSportIcon(activity.activity_type)}
+                  </Box>
+                );
+              })}
+
+              {/* Planned Workouts — fill remaining icon slots */}
+              {dayWorkouts.slice(0, Math.max(0, 3 - Math.min(dayActivities.length, 3))).map((workout) => {
                 const isMissed = isPast(new Date(workout.date)) && !workout.is_completed && !isToday(new Date(workout.date));
                 const sportColor = getSportColor(workout.sport_type).main;
                 
@@ -258,45 +297,6 @@ export default function MobileWeekGrid({
                         )}
                       </>
                     )}
-                  </Box>
-                );
-              })}
-
-              {/* Completed Activities */}
-              {dayActivities.slice(0, 3 - dayWorkouts.length).map((activity) => {
-                const sportColor = getSportColor(activity.activity_type).main;
-                
-                return (
-                  <Box
-                    key={`activity-${activity.id}`}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      onActivityClick(activity);
-                    }}
-                    sx={{
-                      position: 'relative',
-                      width: 28,
-                      height: 28,
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                      borderRadius: '50%',
-                      bgcolor: alpha(sportColor, 0.25),
-                      border: `2px solid ${sportColor}`,
-                      color: sportColor,
-                      cursor: 'pointer',
-                      '& svg': {
-                        fontSize: '0.875rem',
-                      },
-                      '&:hover': {
-                        opacity: 0.9,
-                      },
-                      '&:active': {
-                        transform: 'scale(0.9)',
-                      },
-                    }}
-                  >
-                    {getSportIcon(activity.activity_type)}
                   </Box>
                 );
               })}

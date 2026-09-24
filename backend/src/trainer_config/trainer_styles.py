@@ -584,13 +584,13 @@ TRAINER_STYLES: Dict[str, Dict[str, Any]] = {
         },
         
         "key_workouts": [
-            "Long bike - 5-7 hours at IM pace, practice nutrition",
-            "Bike threshold intervals - 3-5x20min at FTP",
-            "Bike-run brick - 4 hours bike + 90min run at race pace",
-            "Run threshold - 60-75min at IM pace or faster",
-            "Swim CSS intervals - 10-15x100m at critical swim speed",
-            "Race simulation - 5-6 hour bike + 2-3 hour run",
-            "Heat training - indoor sessions in hot conditions"
+            "Long bike - scaled to event (70.3: 3–4.5h; full IM: 5–7h) at race-sustainable effort + nutrition",
+            "Bike threshold intervals - 3–4×12–20min near FTP / sweetspot",
+            "Bike-run brick - progressive (70.3 peak: ~3h bike + 45–60min run)",
+            "Run threshold - 45–75min with tempo/threshold segments",
+            "Swim CSS intervals - 8–15×100m at critical swim speed",
+            "Race simulation - scaled to distance (70.3: ~3–4h bike + 45–75min run)",
+            "Heat training - only when race climate requires (skip for temperate races)"
         ],
         
         "periodization_structure": {
@@ -603,15 +603,16 @@ TRAINER_STYLES: Dict[str, Dict[str, Any]] = {
         "recovery_strategy": "Structured recovery protocols: compression gear, massage, ice baths, nutrition timing. Recovery weeks integrated into camps (3 weeks hard, 1 week easier).",
         
         "special_emphasis": [
-            "Bike volume is CRITICAL - Ironman is won on the bike",
+            "Bike volume is CRITICAL — long-course triathlon is won on the bike",
             "Practice race nutrition EXACTLY in training",
-            "Heat adaptation if racing in hot conditions",
+            "Heat adaptation ONLY if racing in hot conditions",
             "Power-based training for cycling (use power meter)",
-            "Pace-based running (not HR) for race specificity",
+            "Run targets: pace when available, else HR zones for race specificity",
             "Swim technique over volume (efficiency first)",
             "Brick workouts weekly in race-specific phase",
             "Mental rehearsal of race scenarios",
-            "Short taper (14-18 days max) - maintain fitness"
+            "Short taper (14-18 days max) - maintain fitness",
+            "SCALE session lengths to event distance (do not use full-IM loads for 70.3/Olympic)"
         ]
     },
     
@@ -1226,110 +1227,41 @@ def build_trainer_specific_prompt(style_id: str) -> str:
 
 
 def get_detailed_workout_instructions() -> str:
-    """Return detailed instructions for generating comprehensive workout details."""
+    """Return structuredSteps-first workout generation rules (ICU / Garmin sync)."""
     return """
-━━━ DETAILED WORKOUT REQUIREMENTS ━━━
+━━━ WORKOUT REQUIREMENTS (structuredSteps FIRST) ━━━
 
-⚠️  CRITICAL: Every workout MUST include comprehensive details!
+CRITICAL: Session structure lives in structuredSteps — NOT in long prose.
+"description" = optional short human notes (1–2 sentences: nutrition, form, intent).
 
-REQUIRED WORKOUT STRUCTURE:
-{{
-  "date": "YYYY-MM-DD",
-  "title": "Descriptive title (e.g., 'Threshold Intervals', 'Easy Recovery Run')",
-  "sportType": "running/cycling/swimming/strength/triathlon",
-  "workoutType": "easy/tempo/interval/long/recovery/race",
-  "durationMinutes": <number>,
-  "targetTSS": <number>,
-  "intensityZone": "zone1/zone2/zone3/zone4/zone5",
-  "description": "COMPREHENSIVE workout description (see below)"
-}}
+Every workout MUST include a non-empty structuredSteps array.
 
-━━━ WORKOUT DESCRIPTION FORMAT ━━━
+stepType: warmup | work | cooldown | rest | repeat
+durationType: time | distance | lap_button
+durationUnit: seconds | minutes | meters | kilometers
+targetType: pace | heart_rate | power | cadence | open
 
-The "description" field MUST be detailed and include:
+Sport targets:
+  • cycling  → targetType "power", targetUnit "%ftp"
+  • running  → targetType "heart_rate" (bpm) preferred, or "pace" (sec/km) if known
+  • swimming → targetType "pace" or "open" + short step description
+  • strength → targetType "open"
+  • brick / triathlon → sequential bike steps, short transition, then run steps
 
-1. WARMUP (always include):
-   - Duration and intensity
-   - Example: "10min easy warmup in Zone 1"
+EXPAND interval repeats into sequential work/rest steps (no nested repeats).
+Easy sessions: 2–4 steps (warmup + main + cooldown).
+Sum of step durations should match durationMinutes (±5 min).
 
-2. MAIN WORK (be specific):
-   For INTERVALS:
-   - Number of repetitions
-   - Duration of each interval
-   - Target pace/power/HR zone
-   - Recovery duration and type
-   - Example: "5x1000m at threshold pace (Zone 4) with 2min easy jog recovery"
-   
-   For TEMPO:
-   - Duration at tempo effort
-   - Target pace/power/HR range
-   - Example: "20min continuous tempo effort at Zone 3 (half-marathon pace)"
-   
-   For LONG RUNS:
-   - Total duration/distance
-   - Any pace variations
-   - Example: "90min easy run in Zone 2, last 15min at marathon pace"
-   
-   For EASY/RECOVERY:
-   - Emphasis on easy effort
-   - Example: "45min easy recovery run, Zone 1-2, conversational pace"
+━━━ TAPER ━━━
+- Reduce volume 50–70%
+- Keep short race-pace openers in structuredSteps
+- Example: 35min easy with 3×5min race-pace work steps + recoveries
 
-3. COOLDOWN (always include):
-   - Duration and intensity
-   - Example: "10min easy cooldown in Zone 1"
+━━━ BRICKS ━━━
+- Bike steps → 2–5min transition (rest/open) → run steps
+- sportType: "triathlon", workoutType: "brick"
 
-4. ADDITIONAL NOTES (when relevant):
-   - Specific focus (form, cadence, nutrition)
-   - Special instructions
-   - Example: "Focus on maintaining cadence >170spm. Practice race nutrition."
-
-━━━ COMPLETE WORKOUT EXAMPLES ━━━
-
-Example 1 - Interval Workout:
-{{
-  "title": "VO2max Intervals",
-  "description": "Warmup: 15min easy running in Zone 1-2 with 3x100m strides. Main: 6x800m at VO2max pace (Zone 5, ~5K race pace) with 400m easy jog recovery between intervals. Focus on maintaining consistent pace across all intervals. Cooldown: 10min easy running in Zone 1. Total: 60min"
-}}
-
-Example 2 - Long Run:
-{{
-  "title": "Progressive Long Run",
-  "description": "90min long run starting in Zone 2. Run first 60min at comfortable aerobic pace, then increase to marathon pace (Zone 3) for 20min, finish with 10min easy cooldown in Zone 1. Practice race-day nutrition (gel at 45min and 75min). Focus on maintaining form as fatigue sets in."
-}}
-
-Example 3 - Tempo Run:
-{{
-  "title": "Sustained Tempo",
-  "description": "Warmup: 10min easy running in Zone 1. Main: 30min continuous tempo effort at Zone 3 (half-marathon pace, comfortably hard). Focus on relaxed form and controlled breathing. Cooldown: 10min easy in Zone 1 with light stretching. Total: 50min"
-}}
-
-Example 4 - Easy Recovery:
-{{
-  "title": "Easy Recovery Run",
-  "description": "45min easy recovery run at Zone 1-2. Pace should feel comfortable and conversational. If HR rises above Zone 2, slow down. This is active recovery - do NOT push pace. Focus on relaxed form and enjoying the run."
-}}
-
-━━━ TAPER PHASE WORKOUTS ━━━
-
-Taper workouts MUST:
-- Reduce volume by 50-70%
-- Maintain intensity in short bursts
-- Include race-pace efforts
-- Example: "30min easy run with 3x5min at race pace, 2min recovery between"
-
-━━━ BRICK WORKOUTS (Triathlon) ━━━
-
-Brick workouts MUST specify:
-- Bike duration and intensity
-- Transition
-- Run duration and intensity
-- Example: "90min bike at Zone 2-3, quick transition (practice race setup), 30min run starting at Zone 3 (expect heavy legs first 10min)"
-
-━━━ RACE-SPECIFIC WORKOUTS ━━━
-
-Race simulation workouts MUST:
-- Mimic race conditions (time of day, terrain, weather considerations)
-- Practice pacing strategy
-- Test race nutrition
-- Example: "20K run: First 5K at easy pace, then 10K at goal marathon pace, final 5K push to half-marathon pace. Practice fueling: gel at 30min and 60min."
+━━━ RACE SIMS ━━━
+- Mimic race pacing + nutrition notes in description
+- Keep structure in structuredSteps with measurable targets
 """

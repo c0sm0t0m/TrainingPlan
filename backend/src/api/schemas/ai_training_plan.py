@@ -34,6 +34,33 @@ class PromptGenerationConfig(BaseModel):
         description="Optional custom training philosophy to override/extend selected trainer style"
     )
     additional_notes: Optional[str] = Field(None, alias='additionalNotes')
+    generation_mode: str = Field(
+        default="phased",
+        alias='generationMode',
+        description="'full' = one prompt for entire plan; 'phased' = one phase at a time"
+    )
+    phase_index: Optional[int] = Field(
+        None,
+        ge=0,
+        alias='phaseIndex',
+        description="0-based phase index when generationMode is 'phased'"
+    )
+
+
+class PlanPhaseInfo(BaseModel):
+    """One periodization phase for step-by-step generation"""
+    model_config = ConfigDict(populate_by_name=True, by_alias=True)
+
+    index: int
+    id: str
+    name: str
+    focus: str
+    week_start: int = Field(alias='weekStart')
+    week_end: int = Field(alias='weekEnd')
+    weeks: int
+    start_date: str = Field(alias='startDate')
+    end_date: str = Field(alias='endDate')
+    is_last: bool = Field(alias='isLast')
 
 
 class PromptGenerationResponse(BaseModel):
@@ -44,6 +71,14 @@ class PromptGenerationResponse(BaseModel):
     athlete_data: Dict[str, Any] = Field(alias='athleteData')
     event_details: Dict[str, Any] = Field(alias='eventDetails')
     plan_config: Dict[str, Any] = Field(alias='planConfig')
+    generation_mode: str = Field(alias='generationMode')
+    phases: List[PlanPhaseInfo] = Field(default_factory=list)
+    current_phase: Optional[PlanPhaseInfo] = Field(None, alias='currentPhase')
+    recommended_mode: str = Field(
+        default="phased",
+        alias='recommendedMode',
+        description="Suggested mode based on plan length"
+    )
 # ===== Import Schemas =====
 
 class WorkoutStep(BaseModel):

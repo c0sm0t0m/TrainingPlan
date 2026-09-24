@@ -2,7 +2,7 @@
 User database model
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
 from sqlalchemy.orm import relationship
 from src.database import Base
 
@@ -27,6 +27,16 @@ class User(Base):
     garmin_oauth2_token = Column(String, nullable=True)
     garmin_connected = Column(Boolean, default=False)
     garmin_last_sync = Column(DateTime, nullable=True)
+
+    # Intervals.icu Integration (push planned workouts)
+    icu_api_key = Column(String, nullable=True)
+    icu_athlete_id = Column(String, nullable=True)  # ICU athlete id, or "0" for self
+    icu_connected = Column(Boolean, default=False)
+    icu_last_sync = Column(DateTime, nullable=True)
+
+    # Workout library: JSON array of template ids enabled for Calendar add
+    # null = use built-in starter defaults; "[]" = none; '["id",...]' = selection
+    workout_library_enabled_ids = Column(Text, nullable=True)
     
     # Training Thresholds & Zones
     # Cycling
