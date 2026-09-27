@@ -5,13 +5,14 @@ fastapi==0.104.1
 uvicorn[standard]==0.24.0
 pydantic==2.5.2
 pydantic-settings==2.1.0
+email-validator==2.1.0  # Required for pydantic EmailStr
 
 # Database
 sqlalchemy==2.0.23
 alembic==1.13.0
 asyncpg==0.31.0  # Updated for Python 3.13 compatibility
 greenlet==3.3.0  # Required for SQLAlchemy async operations
-# psycopg2-binary==2.9.9  # Commented out - not needed for SQLite development
+psycopg2-binary==2.9.9  # Sync driver for Alembic migrations against Postgres
 
 # Authentication & Security
 python-jose[cryptography]==3.3.0

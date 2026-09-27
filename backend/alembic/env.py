@@ -2,6 +2,14 @@
 Alembic migration configuration
 """
 from logging.config import fileConfig
+from pathlib import Path
+import sys
+
+# Ensure /app (backend root) is importable when alembic cwd differs (e.g. QNAP exec)
+_BACKEND_ROOT = Path(__file__).resolve().parents[1]
+if str(_BACKEND_ROOT) not in sys.path:
+    sys.path.insert(0, str(_BACKEND_ROOT))
+
 from sqlalchemy import engine_from_config, pool
 from alembic import context
 

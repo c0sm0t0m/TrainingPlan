@@ -36,6 +36,10 @@ export default defineConfig({
       usePolling: true,
     },
   },
+  preview: {
+    host: true,
+    port: 3000,
+  },
   resolve: {
     alias: {
       '@': '/src',

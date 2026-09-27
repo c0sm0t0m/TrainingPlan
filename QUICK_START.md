@@ -230,11 +230,10 @@ Cache: Redis (Docker) or none (local dev)
 
 Once confirmed working on your local machine:
 
-1. **Read**: [QNAP_DEPLOYMENT_GUIDE.md](QNAP_DEPLOYMENT_GUIDE.md)
-2. **Update .env** with your NAS IP
-3. **Transfer** deployment package to NAS via rsync
-4. **SSH into NAS** and run: `docker-compose up -d`
-5. **Access** at: `http://YOUR_NAS_IP:5173`
+1. **Read**: [QNAP_DEPLOYMENT_GUIDE.md](QNAP_DEPLOYMENT_GUIDE.md) (Release + DB sync sections)
+2. **Release**: `./deploy-qnap.sh` from your Mac
+3. **Optional DB sync**: `./scripts/db-sync.sh pull|push` (Postgres both sides)
+4. **Access** at: `http://YOUR_NAS_IP:3000`
 
 ---
 

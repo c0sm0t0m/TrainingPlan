@@ -7,6 +7,60 @@
 
 This guide walks you through deploying Kinesis to your QNAP NAS using Container Station. The application will run as Docker containers with persistent data storage.
 
+---
+
+## Release (recommended daily path)
+
+From your Mac, in the project root:
+
+```bash
+# Optional: tag a release
+git tag v0.x.y
+
+# Sync code to NAS, rebuild containers, run migrations
+./deploy-qnap.sh
+```
+
+What this does:
+- Writes a `VERSION` file (git describe + UTC timestamp)
+- rsyncs the project to the NAS (does **not** overwrite NAS `.env`, local SQLite DBs, or media)
+- Rebuilds with `docker-compose.yml` + `docker-compose.qnap.yml` (production frontend build)
+- Runs `alembic upgrade head` on the NAS backend
+
+Useful flags: `--dry-run`, `--skip-migrations`, `--debug`, `--path /share/Container/kinesis-deploy`
+
+Defaults live in [`scripts/nas-config.sh`](scripts/nas-config.sh) (`NAS_IP`, `NAS_USER`, `NAS_PATH`).
+
+**Deploy never syncs the database.** Use the DB sync commands below when you want to move training data.
+
+---
+
+## Bidirectional DB sync (Mac ↔ NAS)
+
+Both sides must use **Postgres** (NAS already does via Compose). One-time Mac setup if you were on SQLite:
+
+```bash
+# Start local Postgres, migrate schema, import backend/trainingplan.db
+./scripts/sqlite-to-postgres.sh
+
+# Point local API at Postgres (backend/.env or project .env):
+#   DATABASE_URL=postgresql+asyncpg://trainingplan_user:CHANGE_ME@localhost:5432/trainingplan
+#   DB_HOST=localhost
+```
+
+Then sync explicitly (full replace, with automatic target backup under `backups/db/`):
+
+```bash
+./scripts/db-sync.sh pull                 # NAS → Mac (overwrite local)
+./scripts/db-sync.sh push                 # Mac → NAS (overwrite NAS)
+./scripts/db-sync.sh pull --with-uploads  # also sync uploads volume
+./scripts/db-sync.sh push --yes           # skip typed confirmation
+```
+
+You must type `pull` or `push` to confirm (unless `--yes`). This is not a merge — the destination DB is replaced.
+
+---
+
 ## Prerequisites
 
 ### QNAP Requirements
@@ -21,7 +75,9 @@ This guide walks you through deploying Kinesis to your QNAP NAS using Container 
 
 ---
 
-## Deployment Steps
+## Deployment Steps (manual / first-time detail)
+
+Prefer `./deploy-qnap.sh` above. The steps below remain as a deeper reference for first-time NAS `.env` setup.
 
 ### Step 1: Prepare Deployment Package
 

@@ -60,6 +60,9 @@ backups/
 *.sql
 *.dump
 
+# Generated on each deploy (synced to NAS)
+VERSION
+
 # Certificates
 *.pem
 *.key

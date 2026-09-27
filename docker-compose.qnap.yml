@@ -23,5 +23,5 @@ services:
   frontend:
     # Remove hardcoded localhost API URL on NAS; frontend auto-detects browser host.
     environment: {}
-    # Keep dev server command but ensure host/port are explicit for LAN access
-    command: npm run dev -- --host 0.0.0.0 --port 3000
+    # Production build + preview (not Vite HMR/dev server)
+    command: sh -c "npm run build && npm run preview -- --host 0.0.0.0 --port 3000"
