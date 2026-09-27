@@ -84,6 +84,9 @@ coverage/
 *.tmp
 .temp/
 
+# Instagram upload packs (local media)
+docs/ig-outbox/
+
 # External code (third-party SDKs)
 .external code/
 backend/tapiriik/
