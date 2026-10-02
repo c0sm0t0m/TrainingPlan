@@ -8,8 +8,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 
 from src.models.training_plan import TrainingPlan, Workout
+from src.models.user import User
 from src.models.garmin_activity import GarminActivity
 from src.models.weekly_threshold import WeeklyThreshold
+from src.utils.calculations.planned_load import (
+    AthleteThresholds,
+    append_pace_label,
+    pace_prescription_text,
+    prepare_planned_session,
+)
 from src.api.schemas.ai_training_plan import (
     TrainingPlanImport,
     ValidationResult,
@@ -125,6 +132,19 @@ def generate_plan_preview(plan_data: TrainingPlanImport) -> PlanPreview:
     )
 
 
+async def load_athlete_thresholds(db: AsyncSession, user_id: int) -> AthleteThresholds:
+    """FTP, run pace, and swim CSS from the user row. These override stale weekly rows."""
+    result = await db.execute(select(User).where(User.id == user_id))
+    user = result.scalar_one_or_none()
+    if not user:
+        return AthleteThresholds()
+    return AthleteThresholds(
+        run_pace_sec_per_km=user.threshold_pace,
+        ftp_watts=user.ftp,
+        swim_pace_sec_per_100m=user.swim_threshold_pace,
+    )
+
+
 async def import_training_plan(
     user_id: int,
     plan_data: TrainingPlanImport,
@@ -156,27 +176,43 @@ async def import_training_plan(
     
     db.add(training_plan)
     await db.flush()  # Get plan.id
+
+    thresholds = await load_athlete_thresholds(db, user_id)
     
     # Create Workouts
     workouts_created = 0
     for workout_data in plan.workouts:
+        steps_json = (
+            [step.model_dump() for step in workout_data.structured_steps]
+            if workout_data.structured_steps
+            else []
+        )
+        steps_json, target_tss, distance_km, pace_label = prepare_planned_session(
+            steps_json,
+            sport=workout_data.sport_type,
+            zone=workout_data.intensity_zone,
+            workout_type=workout_data.workout_type,
+            thresholds=thresholds,
+        )
+        description = append_pace_label(workout_data.description or "", pace_label)
+        stored_distance = workout_data.distance_km
+        if distance_km is not None:
+            stored_distance = distance_km
         workout = Workout(
             training_plan_id=training_plan.id,
             date=workout_data.date,
             sport_type=workout_data.sport_type,
             workout_type=workout_data.workout_type,
             title=workout_data.title,
-            description=workout_data.description or "",
+            description=description,
             duration_minutes=workout_data.duration_minutes,
-            distance_km=workout_data.distance_km,
+            distance_km=stored_distance,
             intensity_zone=workout_data.intensity_zone,
-            target_tss=workout_data.target_tss,
+            target_tss=target_tss,
             notes=workout_data.notes or ""
         )
         
-        # Store structured steps as JSON if present
-        if workout_data.structured_steps:
-            steps_json = [step.model_dump() for step in workout_data.structured_steps]
+        if steps_json:
             workout.structured_workout_json = json.dumps(steps_json)
         
         db.add(workout)
@@ -225,7 +261,9 @@ async def generate_ai_prompt(
     total_tss = sum(a.calculated_tss or 0 for a in recent_activities)
     avg_weekly_tss = total_tss / 6 if total_tss > 0 else 0
     
-    # Get latest thresholds
+    # Current settings on the user row. Weekly rows are historic and can be stale.
+    user_result = await db.execute(select(User).where(User.id == user_id))
+    user = user_result.scalar_one_or_none()
     threshold_result = await db.execute(
         select(WeeklyThreshold)
         .where(WeeklyThreshold.user_id == user_id)
@@ -250,12 +288,28 @@ async def generate_ai_prompt(
         "ctl_reliable": False,
     }
     
-    if latest_threshold:
+    if user and user.threshold_pace:
+        athlete_data["running_threshold_pace"] = user.threshold_pace
+    elif latest_threshold and latest_threshold.threshold_pace:
         athlete_data["running_threshold_pace"] = latest_threshold.threshold_pace
-        athlete_data["running_threshold_hr"] = latest_threshold.running_threshold_hr
-        athlete_data["cycling_ftp"] = latest_threshold.ftp
-        athlete_data["max_hr"] = latest_threshold.max_hr
-        athlete_data["resting_hr"] = latest_threshold.resting_hr
+    if user and user.swim_threshold_pace:
+        athlete_data["swim_threshold_pace"] = user.swim_threshold_pace
+    athlete_data["running_threshold_hr"] = (
+        (user.running_threshold_hr if user else None)
+        or (latest_threshold.running_threshold_hr if latest_threshold else None)
+    )
+    athlete_data["cycling_ftp"] = (
+        (user.ftp if user else None)
+        or (latest_threshold.ftp if latest_threshold else None)
+    )
+    athlete_data["max_hr"] = (
+        (user.max_hr if user else None)
+        or (latest_threshold.max_hr if latest_threshold else None)
+    )
+    athlete_data["resting_hr"] = (
+        (user.resting_hr if user else None)
+        or (latest_threshold.resting_hr if latest_threshold else None)
+    )
     
     event_details = {
         "name": config.event_name or "Target Event",
@@ -403,6 +457,9 @@ instead of truncated JSON.
         thresholds_block += f"\n  • Running threshold HR: {athlete_data['running_threshold_hr']} bpm"
     if athlete_data.get("cycling_ftp"):
         thresholds_block += f"\n  • Cycling FTP: {athlete_data['cycling_ftp']} watts"
+    if athlete_data.get("swim_threshold_pace"):
+        swim_sec = athlete_data["swim_threshold_pace"]
+        thresholds_block += f"\n  • Swim CSS: {int(swim_sec) // 60}:{int(swim_sec) % 60:02d} /100m"
     if athlete_data.get("max_hr"):
         thresholds_block += f"\n  • Max HR: {athlete_data['max_hr']} bpm"
     if athlete_data.get("resting_hr"):
@@ -410,6 +467,15 @@ instead of truncated JSON.
 
     max_hr = athlete_data.get("max_hr") or 180
     thr_hr = athlete_data.get("running_threshold_hr") or int(max_hr * 0.92)
+    run_pace_raw = athlete_data.get("running_threshold_pace")
+    run_pace_sec = None
+    if run_pace_raw:
+        run_pace_sec = int(round(run_pace_raw * 60)) if run_pace_raw <= 20 else int(round(run_pace_raw))
+    pace_rules = (
+        pace_prescription_text(run_pace_sec)
+        if run_pace_sec
+        else "RUN PACES: threshold pace missing — do not invent absolute run paces."
+    )
 
     notes_block = ""
     if plan_config.get("additional_notes"):
@@ -462,9 +528,12 @@ Use for load progression context. Do NOT invent missing metrics.
 
 ━━━ THRESHOLDS ━━━{thresholds_block}
 
-HR ZONES (approx from Max HR {max_hr}; threshold HR ~{thr_hr}):
-  Z1 <60% | Z2 60–75% | Z3 75–85% | Z4 85–92% | Z5 >92% HRmax
-BIKE (%FTP): Z1 <55% | Z2 56–75% | Z3/SS 76–90% | Z4 91–105% | Z5 >106%
+{pace_rules}
+BIKE: every cycling step is % of FTP ({athlete_data.get('cycling_ftp') or 'FTP'} W). targetUnit "%ftp". No absolute watts.
+  Z1 <55% | Z2 56–75% | Z3/SS 76–90% | Z4 91–105% | Z5 >106%
+SWIM: pace in sec/100m around the CSS above. Easy slower than CSS, quality at or slightly faster.
+targetTSS may be 0. The app replaces it from these thresholds and the steps. Do not invent TSS.
+HR (context only, not a run target): max {max_hr}, threshold ~{thr_hr}.
 
 ━━━ TARGET EVENT ━━━
   • Event: {event_details['name']}
@@ -577,7 +646,7 @@ VALIDATION CHECKLIST
   [ ] trainingPlan wrapper
   [ ] Workouts only in scope dates; preferred days covered
   [ ] Every workout has structuredSteps length ≥ 2
-  [ ] Bike steps use %ftp; run steps use bpm (or pace if provided)
+  [ ] Bike steps use %ftp; run steps use pace sec/km from the threshold above
   [ ] Sessions respect event-scaled ceilings above
 
 WHAT THE USER WILL DO

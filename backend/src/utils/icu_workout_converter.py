@@ -95,6 +95,33 @@ def _step_power_target(step: Dict[str, Any]) -> Optional[str]:
     )
 
 
+def _format_pace_seconds(seconds: float) -> str:
+    total = int(round(seconds))
+    return f"{total // 60}:{total % 60:02d}"
+
+
+def _step_pace_target(step: Dict[str, Any]) -> Optional[str]:
+    """Run pace as 5:39-6:15/km. Low bound is the faster (smaller) number."""
+    target_type = (step.get("target_type") or step.get("targetType") or "").lower()
+    target_unit = (step.get("target_unit") or step.get("targetUnit") or "").lower()
+    if target_type != "pace":
+        return None
+    lo = step.get("target_value_low")
+    if lo is None:
+        lo = step.get("targetValueLow")
+    hi = step.get("target_value_high")
+    if hi is None:
+        hi = step.get("targetValueHigh")
+    if not lo and not hi:
+        return None
+    suffix = "/100m" if "100" in target_unit else "/km"
+    fast = _format_pace_seconds(min(v for v in (lo, hi) if v))
+    slow = _format_pace_seconds(max(v for v in (lo, hi) if v))
+    if fast == slow:
+        return f"{fast}{suffix}"
+    return f"{fast}-{slow}{suffix}"
+
+
 def _step_to_icu_line(step: Dict[str, Any]) -> str:
     """Convert one structured step dict to an ICU description line."""
     # Support both camelCase (API) and snake_case
@@ -119,6 +146,13 @@ def _step_to_icu_line(step: Dict[str, Any]) -> str:
     power_pct = _step_power_target(step)
     if power_pct:
         line = f"- {dur} {power_pct}"
+        if note:
+            line += f" {note}"
+        return line
+
+    pace = _step_pace_target(step)
+    if pace:
+        line = f"- {dur} {pace}"
         if note:
             line += f" {note}"
         return line

@@ -27,6 +27,24 @@ def test_power_pct_range_line():
     assert "- 15m 88-92% Sweet spot" in text
 
 
+def test_run_pace_line():
+    steps = [
+        {
+            "stepType": "work",
+            "durationType": "time",
+            "durationValue": 40,
+            "durationUnit": "minutes",
+            "targetType": "pace",
+            "targetValueLow": 339,
+            "targetValueHigh": 375,
+            "targetUnit": "sec/km",
+            "description": "Easy",
+        }
+    ]
+    text = structured_steps_to_description(steps)
+    assert "- 40m 5:39-6:15/km Easy" in text
+
+
 def test_power_pct_single_and_fraction():
     steps = [
         {

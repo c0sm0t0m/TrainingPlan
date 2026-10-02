@@ -1243,7 +1243,7 @@ targetType: pace | heart_rate | power | cadence | open
 
 Sport targets:
   • cycling  → targetType "power", targetUnit "%ftp"
-  • running  → targetType "heart_rate" (bpm) preferred, or "pace" (sec/km) if known
+  • running  → targetType "pace", targetUnit "sec/km", bounds from threshold pace (never heart rate)
   • swimming → targetType "pace" or "open" + short step description
   • strength → targetType "open"
   • brick / triathlon → sequential bike steps, short transition, then run steps
