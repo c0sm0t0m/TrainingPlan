@@ -5,6 +5,9 @@ import { useAuthStore } from '../store/authStore'
 import HRVStatsWidget from '../components/analytics/HRVStatsWidget'
 import TSSPerWeekWidget from '../components/analytics/TSSPerWeekWidget'
 import HRZoneDistributionWidget from '../components/analytics/HRZoneDistributionWidget'
+import PerformanceTrendWidget from '../components/analytics/PerformanceTrendWidget'
+import ThresholdPaceTrendChart from '../components/ThresholdPaceTrendChart'
+import KeySessionsWidget from '../components/KeySessionsWidget'
 import { Assessment } from '@mui/icons-material'
 
 export default function Analytics() {
@@ -27,7 +30,8 @@ export default function Analytics() {
     }
   }, [isAuthenticated, user, navigate, fetchUser])
 
-  if (!user) {
+  // Auth token is enough to load widgets; don't block the page on /auth/me.
+  if (!isAuthenticated) {
     return <div>Loading...</div>
   }
 
@@ -77,7 +81,7 @@ export default function Analytics() {
             <ToggleButtonGroup
               value={timeRange}
               exclusive
-              onChange={(event, newValue) => {
+              onChange={(_, newValue) => {
                 if (newValue !== null) {
                   setTimeRange(newValue)
                 }
@@ -118,6 +122,21 @@ export default function Analytics() {
             px: { xs: 2, sm: 3 }
           }}
         >
+          {/* Performance over the year (pace / power) */}
+          <Box sx={{ mb: 4 }}>
+            <PerformanceTrendWidget key={`perf-${timeRange}`} daysBack={timeRange} />
+          </Box>
+
+          {/* Threshold pace from key run sessions */}
+          <Box sx={{ mb: 4 }}>
+            <ThresholdPaceTrendChart key={`threshold-pace-${timeRange}`} sport="running" daysBack={timeRange} />
+          </Box>
+
+          {/* Key sessions scatter */}
+          <Box sx={{ mb: 4 }}>
+            <KeySessionsWidget key={`key-sessions-${timeRange}`} sport="running" daysBack={timeRange} limit={24} />
+          </Box>
+
           {/* HRV Stats Widget */}
           <Box sx={{ mb: 4 }}>
             <HRVStatsWidget key={`hrv-${timeRange}`} daysBack={timeRange} />

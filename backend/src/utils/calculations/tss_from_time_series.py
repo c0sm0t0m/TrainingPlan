@@ -179,6 +179,11 @@ def calculate_tss_from_time_series(
     """
     if "error" in time_series_data:
         return None
+
+    # Tennis uses calculate_tennis_tss. The HR stream stays high between points
+    # and this integral treats that as continuous work.
+    if activity_type and "tennis" in activity_type.lower():
+        return None
     
     metadata = time_series_data.get("metadata", {})
     time_series = time_series_data.get("time_series", {})

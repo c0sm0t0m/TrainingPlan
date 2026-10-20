@@ -89,6 +89,8 @@ coverage/
 
 # Instagram upload packs (local media)
 docs/ig-outbox/
+.ig_session.json
+.ig_followed_history.json
 
 # External code (third-party SDKs)
 .external code/

@@ -3,6 +3,7 @@ import { getTSSColor } from '../../utils/sportColors';
 
 interface WeeklySummaryBarProps {
   totalTSS: number;
+  plannedTSS?: number;
   totalHours: number;
   totalDistance: number;
   last7DaysIF?: number[]; // Optional: Intensity Factor (IF) for each of last 7 days
@@ -11,6 +12,7 @@ interface WeeklySummaryBarProps {
 
 export default function WeeklySummaryBar({
   totalTSS,
+  plannedTSS,
   totalHours,
   totalDistance,
   last7DaysIF = [],
@@ -40,11 +42,11 @@ export default function WeeklySummaryBar({
         }}
       >
         <Box textAlign="center" flex={1}>
-          <Typography variant="h6" fontWeight={700} sx={{ color: 'primary.contrastText' }}>
-            {Math.round(totalTSS)}
+          <Typography fontWeight={700} noWrap sx={{ color: 'primary.contrastText', lineHeight: 1.1, fontSize: '1rem' }}>
+            {plannedTSS != null ? `${Math.round(totalTSS)} / ${Math.round(plannedTSS)}` : Math.round(totalTSS)}
           </Typography>
-          <Typography variant="caption" sx={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.9)' }}>
-            TSS
+          <Typography variant="caption" noWrap sx={{ fontSize: '0.65rem', color: 'rgba(255,255,255,0.9)' }}>
+            {plannedTSS != null ? 'TSS done / plan' : 'TSS'}
           </Typography>
         </Box>
         

@@ -1,20 +1,28 @@
+import { lazy, Suspense, useMemo, useState, useEffect, createContext, useContext } from 'react'
 import { BrowserRouter as Router, Routes, Route, Navigate } from 'react-router-dom'
-import { ThemeProvider, createTheme, CssBaseline } from '@mui/material'
+import { ThemeProvider, createTheme, CssBaseline, Box, CircularProgress } from '@mui/material'
 import { FeatureFlagsProvider, useFeatureFlags } from './contexts/FeatureFlagsContext'
 import Layout from './components/Layout'
-import QuickActionsFAB from './components/QuickActionsFAB'
 import Login from './pages/Login'
-import Register from './pages/Register'
 import Dashboard from './pages/Dashboard'
-import TrainingPlans from './pages/TrainingPlans'
-import PlanDetail from './pages/PlanDetail'
-import Calendar from './pages/Calendar'
-import ActivityDetail from './pages/ActivityDetail'
-import EventDetail from './pages/EventDetail'
-import AITrainingPlanGenerator from './pages/AITrainingPlanGenerator'
-import Settings from './pages/SettingsNew'
-import Analytics from './pages/Analytics'
-import { useMemo, useState, useEffect, createContext, useContext } from 'react'
+
+const Register = lazy(() => import('./pages/Register'))
+const TrainingPlans = lazy(() => import('./pages/TrainingPlans'))
+const PlanDetail = lazy(() => import('./pages/PlanDetail'))
+const Calendar = lazy(() => import('./pages/Calendar'))
+const ActivityDetail = lazy(() => import('./pages/ActivityDetail'))
+const EventDetail = lazy(() => import('./pages/EventDetail'))
+const AITrainingPlanGenerator = lazy(() => import('./pages/AITrainingPlanGenerator'))
+const Settings = lazy(() => import('./pages/SettingsNew'))
+const Analytics = lazy(() => import('./pages/Analytics'))
+
+function RouteFallback() {
+  return (
+    <Box sx={{ display: 'flex', justifyContent: 'center', py: 8 }}>
+      <CircularProgress />
+    </Box>
+  )
+}
 
 // Dark mode context
 interface ThemeContextType {
@@ -161,17 +169,28 @@ function AppContent() {
       <ThemeProvider theme={theme}>
         <CssBaseline />
         <Router>
+        <Suspense fallback={<RouteFallback />}>
         <Routes>
           {/* Public routes (no layout) */}
           <Route path="/login" element={<Login />} />
           <Route path="/register" element={<Register />} />
           
-          {/* Protected routes (with layout) */}
-          <Route path="/" element={<Navigate to="/dashboard" replace />} />
+          {/* Default: send anonymous users to login (avoids dashboard↔login bounce) */}
+          <Route
+            path="/"
+            element={
+              localStorage.getItem('access_token') ? (
+                <Navigate to="/dashboard" replace />
+              ) : (
+                <Navigate to="/login" replace />
+              )
+            }
+          />
           <Route
             path="/*"
             element={
               <Layout>
+                <Suspense fallback={<RouteFallback />}>
                 <Routes>
                   <Route path="/dashboard" element={<Dashboard />} />
                   <Route path="/calendar" element={<Calendar />} />
@@ -184,10 +203,12 @@ function AppContent() {
                   <Route path="/analytics" element={<Analytics />} />
                   <Route path="/profile" element={<Settings />} /> {/* Placeholder for now */}
                 </Routes>
+                </Suspense>
               </Layout>
             }
           />
         </Routes>
+        </Suspense>
       </Router>
       </ThemeProvider>
     </ThemeContext.Provider>

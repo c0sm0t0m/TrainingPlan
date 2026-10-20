@@ -11,7 +11,7 @@ Formula variants:
 - Swimming TSS (sTSS): Based on pace
 - Generic TSS: Based on duration and perceived intensity
 """
-from typing import Optional
+from typing import Any, Optional
 
 
 def calculate_running_tss(
@@ -264,6 +264,15 @@ def calculate_activity_tss(
             threshold_hr=threshold_hr,
         )
     
+    # Tennis: stop-start. Heart rate stays high between points, so continuous
+    # hrTSS treats a calm hit like a tempo session.
+    elif 'tennis' in sport_lower:
+        return calculate_tennis_tss(
+            duration_minutes=duration_minutes,
+            average_hr=average_hr,
+            threshold_hr=threshold_hr,
+        )
+
     # Swimming: Pace > HR > Duration
     elif 'swim' in sport_lower:
         # Check if we have HR data for fallback
@@ -293,6 +302,49 @@ def calculate_activity_tss(
         
         # Priority 2: Duration-based estimate with moderate intensity
         return (calculate_generic_tss(duration_minutes, intensity_factor=0.6), 0.6)
+
+
+# Continuous hrTSS overstates racket sports because HR stays elevated in the
+# gaps. 0.45 keeps a calm 2h hit in the easy range and still rises when the
+# session is actually hard.
+TENNIS_HR_STRESS_SCALE = 0.45
+
+
+def display_load_for_activity(activity: Any, threshold_hr: Optional[int]) -> Optional[tuple[float, Optional[float]]]:
+    """Recompute tennis load from duration and HR. Other sports keep stored TSS."""
+    sport = getattr(activity, "activity_type", None) or ""
+    if "tennis" not in str(sport).lower():
+        return None
+    seconds = (
+        getattr(activity, "elapsed_duration_seconds", None)
+        or getattr(activity, "duration_seconds", None)
+        or 0
+    )
+    return calculate_tennis_tss(float(seconds) / 60.0, getattr(activity, "average_hr", None), threshold_hr)
+
+
+def calculate_tennis_tss(
+    duration_minutes: float,
+    average_hr: Optional[int] = None,
+    threshold_hr: Optional[int] = None,
+) -> tuple[float, Optional[float]]:
+    """
+    TSS for tennis.
+
+    With heart rate, scale continuous hrTSS by TENNIS_HR_STRESS_SCALE.
+    Without heart rate, use about 25 TSS per hour (calm play).
+    """
+    if not duration_minutes or duration_minutes <= 0:
+        return (0.0, None)
+
+    duration_hours = duration_minutes / 60.0
+    if average_hr and threshold_hr and threshold_hr > 0:
+        raw_if = average_hr / threshold_hr
+        adjusted_if = raw_if * (TENNIS_HR_STRESS_SCALE ** 0.5)
+        tss = duration_hours * (adjusted_if ** 2) * 100
+        return (round(tss, 1), round(adjusted_if, 3))
+
+    return (round(duration_hours * 25.0, 1), 0.50)
 
 
 def calculate_workout_tss(

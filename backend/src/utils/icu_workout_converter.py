@@ -269,5 +269,12 @@ def workout_to_icu_event(workout: Any, external_id: str) -> Dict[str, Any]:
     return event
 
 
+KINESIS_EXTERNAL_ID_PREFIX = "kinesis-workout-"
+
+
 def kinesis_external_id(workout_id: Union[int, str]) -> str:
-    return f"kinesis-workout-{workout_id}"
+    return f"{KINESIS_EXTERNAL_ID_PREFIX}{workout_id}"
+
+
+def is_kinesis_external_id(external_id: Optional[str]) -> bool:
+    return bool(external_id) and str(external_id).startswith(KINESIS_EXTERNAL_ID_PREFIX)

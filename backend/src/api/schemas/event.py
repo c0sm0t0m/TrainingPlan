@@ -18,6 +18,7 @@ class EventBase(BaseModel):
     registration_link: Optional[str] = None
     cost: Optional[str] = None
     notes: Optional[str] = None
+    is_main_goal: bool = False
 
 
 class EventCreate(EventBase):
@@ -37,6 +38,7 @@ class EventUpdate(BaseModel):
     registration_link: Optional[str] = None
     cost: Optional[str] = None
     notes: Optional[str] = None
+    is_main_goal: Optional[bool] = None
     is_completed: Optional[bool] = None
     actual_time: Optional[str] = None
     actual_result: Optional[str] = None

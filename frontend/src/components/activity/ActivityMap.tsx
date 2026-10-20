@@ -43,15 +43,18 @@ interface ActivityMapProps {
   showElevation?: boolean;
 }
 
-// Component to handle map bounds
+// Component to handle map bounds + size after layout
 const MapBoundsHandler: React.FC<{ trackPoints: TrackPoint[] }> = ({ trackPoints }) => {
   const map = useMap();
 
   useEffect(() => {
+    // Leaflet often renders grey until container size is known
+    const t = window.setTimeout(() => map.invalidateSize(), 50);
     if (trackPoints.length > 0) {
       const bounds = new LatLngBounds(trackPoints.map(p => [p.lat, p.lng]));
       map.fitBounds(bounds, { padding: [50, 50] });
     }
+    return () => window.clearTimeout(t);
   }, [trackPoints, map]);
 
   return null;
@@ -64,14 +67,13 @@ const ActivityMap: React.FC<ActivityMapProps> = ({ trackPoints, activityName, sh
 
   const isDarkMode = theme.palette.mode === 'dark';
 
-  // Theme-aware tile selection
-  // Dark mode: CartoDB Dark (dark_all) - Dark map with street labels
-  // Light mode: CartoDB Positron (light_all) - Light map with subtle styling
+  // Free basemaps (CARTO CDN now requires an API key)
   const tileUrl = isDarkMode
-    ? 'https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png'
-    : 'https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png';
+    ? 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}'
+    : 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}';
 
-  const tileAttribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/attributions">CARTO</a>';
+  const tileAttribution =
+    'Tiles &copy; Esri &mdash; Source: Esri, OpenStreetMap contributors';
 
   // Handle fullscreen toggle
   const toggleFullscreen = () => {
@@ -165,9 +167,10 @@ const ActivityMap: React.FC<ActivityMapProps> = ({ trackPoints, activityName, sh
         style={{ height: '100%', width: '100%' }}
         scrollWheelZoom={true}
       >
-        <TileLayer 
-          attribution={tileAttribution} 
-          url={tileUrl} 
+        <TileLayer
+          key={tileUrl}
+          attribution={tileAttribution}
+          url={tileUrl}
         />
 
         {/* GPS Track - Outline layer for contrast */}

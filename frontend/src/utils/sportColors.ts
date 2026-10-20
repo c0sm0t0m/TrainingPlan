@@ -20,6 +20,11 @@ export const SPORT_COLORS = {
     light: '#F3E5F5',
     dark: '#6A1B9A',
   },
+  tennis: {
+    main: '#F9A825',
+    light: '#FFF8E1',
+    dark: '#F57F17',
+  },
   other: {
     main: '#607D8B',    // Grey
     light: '#ECEFF1',
@@ -34,8 +39,12 @@ export const getSportColor = (sport: string) => {
   
   // Map common variations
   if (normalizedSport.includes('run')) return SPORT_COLORS.running
-  if (normalizedSport.includes('bike') || normalizedSport.includes('cycl')) return SPORT_COLORS.cycling
+  // "bik" matches road_biking; "bike" alone does not (Garmin uses "biking")
+  if (normalizedSport.includes('bik') || normalizedSport.includes('cycl') || normalizedSport.includes('ride')) {
+    return SPORT_COLORS.cycling
+  }
   if (normalizedSport.includes('swim')) return SPORT_COLORS.swimming
+  if (normalizedSport.includes('tennis')) return SPORT_COLORS.tennis
   if (normalizedSport.includes('strength') || normalizedSport.includes('gym')) return SPORT_COLORS.strength
   
   return SPORT_COLORS[normalizedSport as SportType] || SPORT_COLORS.other
@@ -46,9 +55,12 @@ export const getSportColor = (sport: string) => {
 export const getSportIcon = (sport: string) => {
   const normalizedSport = sport.toLowerCase().replace(/[_\s-]/g, '')
   
+  if (normalizedSport.includes('bik') || normalizedSport.includes('cycl') || normalizedSport.includes('ride')) {
+    return '🚴'
+  }
   if (normalizedSport.includes('run')) return '🏃'
-  if (normalizedSport.includes('bike') || normalizedSport.includes('cycl')) return '🚴'
   if (normalizedSport.includes('swim')) return '🏊'
+  if (normalizedSport.includes('tennis')) return '🎾'
   if (normalizedSport.includes('strength') || normalizedSport.includes('gym')) return '💪'
   
   return '⚪'

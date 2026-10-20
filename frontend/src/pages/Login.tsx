@@ -9,34 +9,30 @@ import {
   Paper,
   Alert,
   CircularProgress,
-  Chip
+  Chip,
 } from '@mui/material'
 import { useAuthStore } from '../store/authStore'
 import { getApiUrl } from '../services/api'
+import AuthDebugPanel from '../components/AuthDebugPanel'
 
 export default function Login() {
   const navigate = useNavigate()
-  const { login, isLoading, error } = useAuthStore()
+  const { login, isLoading, error, lastStatusCode } = useAuthStore()
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [apiUrl, setApiUrl] = useState('')
 
   useEffect(() => {
-    const url = getApiUrl()
-    setApiUrl(url)
-    console.log('📡 Login page - API URL:', url)
+    setApiUrl(getApiUrl())
   }, [])
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault()
-    console.log('🔐 Login attempt - API URL:', apiUrl)
-    console.log('🔐 Login attempt - Email:', email)
     try {
       await login(email, password)
       navigate('/dashboard')
-    } catch (err) {
-      console.error('❌ Login failed:', err)
-      // Error is handled by store
+    } catch {
+      // Error shown via store + AuthDebugPanel
     }
   }
 
@@ -60,12 +56,12 @@ export default function Login() {
           <Typography variant="body2" align="center" color="text.secondary" sx={{ mb: 2 }}>
             Sign in to your account
           </Typography>
-          
+
           {apiUrl && (
             <Box sx={{ mb: 2, textAlign: 'center' }}>
-              <Chip 
-                label={`Server: ${apiUrl.replace('/api/v1', '')}`} 
-                size="small" 
+              <Chip
+                label={`Server: ${apiUrl.startsWith('/') ? window.location.host : apiUrl.replace('/api/v1', '')}`}
+                size="small"
                 color="info"
                 variant="outlined"
               />
@@ -75,6 +71,7 @@ export default function Login() {
           {error && (
             <Alert severity="error" sx={{ mb: 2 }}>
               {error}
+              {lastStatusCode != null ? ` (HTTP ${lastStatusCode})` : ''}
             </Alert>
           )}
 
@@ -122,6 +119,8 @@ export default function Login() {
               </Link>
             </Box>
           </Box>
+
+          <AuthDebugPanel />
         </Paper>
       </Box>
     </Container>

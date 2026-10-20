@@ -2,15 +2,11 @@ FROM python:3.11-slim
 
 # Set working directory
 WORKDIR /app
-ENV PYTHONPATH=/app
+ENV PYTHONPATH=/app \
+    PIP_DISABLE_PIP_VERSION_CHECK=1
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    gcc \
-    postgresql-client \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy requirements and install Python dependencies
+# No apt/gcc here. The NAS image is built as linux/amd64 on an Apple Silicon
+# Mac, and apt under that emulator runs out of memory. Dependencies ship wheels.
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

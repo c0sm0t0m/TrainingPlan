@@ -12,7 +12,7 @@ from src.models.user import User
 from src.api.routes.auth import get_current_user
 from src.services.garmin_service import garmin_service
 from src.models.garmin_activity import GarminActivity
-from src.utils.calculations.tss_calculator import calculate_tss_from_activity
+from src.utils.calculations.tss_calculator import calculate_tss_from_activity, display_load_for_activity
 from src.utils.datetime_helpers import date_to_string, compare_date_for_sqlite
 from src.utils.calculations.training_load import calculate_training_load_metrics, get_current_training_metrics
 from src.utils.fit_parser import parse_fit_time_series, get_time_series_summary
@@ -44,8 +44,8 @@ class GarminConnectionStatus(BaseModel):
     last_sync: datetime | None = None
 
 
-class GarminActivity(BaseModel):
-    """Garmin activity summary."""
+class GarminActivitySummary(BaseModel):
+    """Garmin activity summary (API schema — not the SQLAlchemy model)."""
     activity_id: int
     activity_name: str
     activity_type: str
@@ -236,6 +236,7 @@ async def sync_garmin_activities(
         errors = []
         processed = 0
         checkpoint_every = 25
+        activities_to_match: list = []
         
         for activity in activities:
             try:
@@ -283,9 +284,17 @@ async def sync_garmin_activities(
                     "calories": activity.get("calories"),
                     "steps": activity.get("steps"),
                     
-                    # Running specific
-                    "average_cadence": activity.get("averageRunningCadenceInStepsPerMinute"),
-                    "max_cadence": activity.get("maxRunningCadenceInStepsPerMinute"),
+                    # Cadence: running (spm) or cycling (rpm) — Garmin uses different keys
+                    "average_cadence": (
+                        activity.get("averageRunningCadenceInStepsPerMinute")
+                        or activity.get("averageBikingCadenceInRevPerMinute")
+                        or activity.get("averageCadence")
+                    ),
+                    "max_cadence": (
+                        activity.get("maxRunningCadenceInStepsPerMinute")
+                        or activity.get("maxBikingCadenceInRevPerMinute")
+                        or activity.get("maxCadence")
+                    ),
                     "average_stride_length_meters": activity.get("avgStrideLength"),
                     
                     # Cycling specific (power)
@@ -434,11 +443,14 @@ async def sync_garmin_activities(
                         if key != "user_id" and key != "garmin_activity_id":  # Don't update IDs
                             setattr(existing_activity, key, value)
                     updated_count += 1
+                    activities_to_match.append(existing_activity)
                 else:
                     # Create new activity
                     new_activity = GarminActivity(**activity_data)
                     db.add(new_activity)
+                    await db.flush()  # assign id for matching
                     new_count += 1
+                    activities_to_match.append(new_activity)
 
                 processed += 1
                 if processed % checkpoint_every == 0:
@@ -455,22 +467,36 @@ async def sync_garmin_activities(
                 print(f"Error importing activity: {error_msg}")
                 continue
         
+        # Match performed activities to planned workouts on the active plan
+        from src.services.activity_match_service import match_activities_batch
+
+        match_results = await match_activities_batch(
+            db, activities_to_match, current_user.id
+        )
+
         # Update last sync time
         current_user.garmin_last_sync = datetime.utcnow()
         await db.commit()
         print(
             f"✅ Activity sync done: {len(activities)} found, "
-            f"{new_count} new, {updated_count} updated, {failed_count} failed "
+            f"{new_count} new, {updated_count} updated, {failed_count} failed, "
+            f"{len(match_results)} matched to plans "
             f"(mode={mode})",
             flush=True,
         )
         
         response = {
-            "message": f"Synced {len(activities)} activities: {new_count} new, {updated_count} updated, {failed_count} failed",
+            "message": (
+                f"Synced {len(activities)} activities: {new_count} new, "
+                f"{updated_count} updated, {failed_count} failed, "
+                f"{len(match_results)} matched to planned workouts"
+            ),
             "activities_found": len(activities),
             "new_activities": new_count,
             "updated_activities": updated_count,
             "failed_activities": failed_count,
+            "matched_workouts": len(match_results),
+            "matches": match_results,
             "include_details": include_details,
             "mode": mode,
         }
@@ -796,6 +822,7 @@ async def get_activities_by_date_range(
     """
     from src.models.garmin_activity import GarminActivity
     from sqlalchemy import select, and_
+    from sqlalchemy.orm import load_only
     from datetime import datetime
     from src.utils.datetime_helpers import compare_date_for_sqlite, date_to_string
     
@@ -811,18 +838,43 @@ async def get_activities_by_date_range(
             detail="Invalid date format. Use YYYY-MM-DD"
         )
     
-    # Convert to strings for SQLite TEXT comparison
-    start_str = compare_date_for_sqlite(start_dt)
-    end_str = compare_date_for_sqlite(end_dt)
+    # Convert to datetimes for Postgres/asyncpg (timestamp >= varchar fails)
+    start_bound = compare_date_for_sqlite(start_dt)
+    end_bound = compare_date_for_sqlite(end_dt)
     
-    # Query activities using string comparison for SQLite TEXT fields
+    # Column list only. raw_data holds FIT series and must stay out of this query.
     query = (
         select(GarminActivity)
+        .options(
+            load_only(
+                GarminActivity.id,
+                GarminActivity.garmin_activity_id,
+                GarminActivity.activity_name,
+                GarminActivity.activity_type,
+                GarminActivity.sport_type_id,
+                GarminActivity.start_time_local,
+                GarminActivity.duration_seconds,
+                GarminActivity.elapsed_duration_seconds,
+                GarminActivity.distance_meters,
+                GarminActivity.calories,
+                GarminActivity.average_hr,
+                GarminActivity.max_hr,
+                GarminActivity.elevation_gain_meters,
+                GarminActivity.average_speed_mps,
+                GarminActivity.average_power_watts,
+                GarminActivity.normalized_power_watts,
+                GarminActivity.threshold_power_watts,
+                GarminActivity.training_load,
+                GarminActivity.calculated_tss,
+                GarminActivity.intensity_factor,
+                GarminActivity.location_name,
+            )
+        )
         .where(
             and_(
                 GarminActivity.user_id == current_user.id,
-                GarminActivity.start_time_local >= start_str,
-                GarminActivity.start_time_local < end_str
+                GarminActivity.start_time_local >= start_bound,
+                GarminActivity.start_time_local < end_bound
             )
         )
         .order_by(GarminActivity.start_time_local)
@@ -830,8 +882,64 @@ async def get_activities_by_date_range(
     
     result = await db.execute(query)
     activities = result.scalars().all()
-    
-    # Convert to dict for response
+
+    # Attach planned-workout match info for calendar (hide linked plans / review badge).
+    # Select match columns only so structured workout JSON is not loaded.
+    from src.models.training_plan import Workout
+
+    activity_ids = [a.id for a in activities]
+    match_by_activity: dict = {}
+    if activity_ids:
+        match_result = await db.execute(
+            select(
+                Workout.matched_activity_id,
+                Workout.id,
+                Workout.title,
+                Workout.date,
+                Workout.match_confidence,
+                Workout.match_status,
+            ).where(Workout.matched_activity_id.in_(activity_ids))
+        )
+        for w in match_result.all():
+            match_by_activity[w.matched_activity_id] = {
+                "matched_workout_id": w.id,
+                "matched_workout_title": w.title,
+                "matched_workout_date": w.date.isoformat() if w.date else None,
+                "match_confidence": w.match_confidence,
+                "match_status": w.match_status,
+                "match_needs_review": w.match_status == "needs_review",
+            }
+
+    # Convert to dict for response.
+    # `date` is always the day the activity was performed. A linked plan's
+    # date is attached separately and must not move the activity on the calendar.
+    empty_match = {
+        "matched_workout_id": None,
+        "matched_workout_title": None,
+        "matched_workout_date": None,
+        "match_confidence": None,
+        "match_status": None,
+        "match_needs_review": False,
+        "off_plan_day": False,
+    }
+
+    tennis_threshold = current_user.running_threshold_hr or (
+        int(current_user.max_hr * 0.9) if current_user.max_hr else 165
+    )
+
+    def _load(activity) -> tuple:
+        override = display_load_for_activity(activity, tennis_threshold)
+        if override:
+            return override
+        return activity.calculated_tss, activity.intensity_factor
+
+    def _with_match(activity) -> dict:
+        performed = date_to_string(activity.start_time_local)
+        match = dict(match_by_activity.get(activity.id) or empty_match)
+        planned = match.get("matched_workout_date")
+        match["off_plan_day"] = bool(planned and performed and planned != performed)
+        return match
+
     return [
         {
             "id": activity.id,
@@ -852,9 +960,10 @@ async def get_activities_by_date_range(
             "normalized_power_watts": activity.normalized_power_watts,
             "threshold_power_watts": activity.threshold_power_watts,
             "training_load": activity.training_load,
-            "calculated_tss": activity.calculated_tss,
-            "intensity_factor": activity.intensity_factor,
+            "calculated_tss": _load(activity)[0],
+            "intensity_factor": _load(activity)[1],
             "location_name": activity.location_name,
+            **_with_match(activity),
         }
         for activity in activities
     ]
@@ -873,64 +982,31 @@ async def get_activity_stats(
     """
     from src.models.garmin_activity import GarminActivity
     from sqlalchemy import select, func
-    from datetime import datetime, timedelta
-    
-    # Include today by using tomorrow as end_date
-    now = datetime.now() + timedelta(days=1)
-    week_ago = now - timedelta(days=7)
-    month_ago = now - timedelta(days=30)
-    
-    # Convert to strings for SQLite TEXT comparison
-    week_ago_str = week_ago.strftime("%Y-%m-%d")
-    month_ago_str = month_ago.strftime("%Y-%m-%d")
-    
-    # Total activities
-    total_query = select(func.count(GarminActivity.id)).where(
-        GarminActivity.user_id == current_user.id
-    )
-    total_result = await db.execute(total_query)
-    total_activities = total_result.scalar() or 0
-    
-    # This week (using string comparison)
-    week_query = select(func.count(GarminActivity.id)).where(
-        GarminActivity.user_id == current_user.id,
-        GarminActivity.start_time_local >= week_ago_str
-    )
-    week_result = await db.execute(week_query)
-    activities_this_week = week_result.scalar() or 0
-    from src.utils.datetime_helpers import compare_date_for_sqlite
-    
+
     now = datetime.now()
     week_ago = now - timedelta(days=7)
     month_ago = now - timedelta(days=30)
-    
-    # Convert to strings for SQLite TEXT comparison
-    week_ago_str = compare_date_for_sqlite(week_ago)
-    month_ago_str = compare_date_for_sqlite(month_ago)
-    
-    # Total activities
+
     total_query = select(func.count(GarminActivity.id)).where(
         GarminActivity.user_id == current_user.id
     )
     total_result = await db.execute(total_query)
     total_activities = total_result.scalar() or 0
-    
-    # This week (using string comparison)
+
     week_query = select(func.count(GarminActivity.id)).where(
         GarminActivity.user_id == current_user.id,
-        GarminActivity.start_time_local >= week_ago_str
+        GarminActivity.start_time_local >= week_ago,
     )
     week_result = await db.execute(week_query)
     activities_this_week = week_result.scalar() or 0
-    
-    # This month (using string comparison)
+
     month_query = select(func.count(GarminActivity.id)).where(
         GarminActivity.user_id == current_user.id,
-        GarminActivity.start_time_local >= month_ago_str
+        GarminActivity.start_time_local >= month_ago,
     )
     month_result = await db.execute(month_query)
     activities_this_month = month_result.scalar() or 0
-    
+
     return {
         "total_activities": total_activities,
         "activities_this_week": activities_this_week,
@@ -1353,44 +1429,15 @@ async def get_activity_time_series(
             detail="Activity not found"
         )
     
-    # Check if time series data exists in raw_data
-    if activity.raw_data and "time_series" in activity.raw_data:
-        return activity.raw_data["time_series"]
-    
-    # If not, try to download and parse FIT file now
-    if current_user.garmin_connected:
-        try:
-            fit_data = await garmin_service.download_activity_fit(
-                current_user.garmin_oauth1_token,
-                current_user.garmin_oauth2_token,
-                int(activity.garmin_activity_id)
-            )
-            
-            # Parse time series data
-            time_series_result = parse_fit_time_series(fit_data)
-            
-            if "error" not in time_series_result:
-                # Save to database for future requests
-                if not activity.raw_data:
-                    activity.raw_data = {}
-                activity.raw_data["time_series"] = time_series_result
-                await db.commit()
-                
-                return time_series_result
-            else:
-                raise HTTPException(
-                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                    detail=f"Failed to parse FIT file: {time_series_result['error']}"
-                )
-        except Exception as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to download FIT file: {str(e)}"
-            )
-    
+    from src.services.activity_track_service import ensure_time_series
+
+    payload = await ensure_time_series(db, activity, current_user)
+    if payload:
+        return payload
+
     raise HTTPException(
         status_code=status.HTTP_404_NOT_FOUND,
-        detail="Time series data not available for this activity"
+        detail="Time series data not available for this activity",
     )
 
 

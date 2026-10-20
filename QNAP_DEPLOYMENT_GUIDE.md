@@ -24,7 +24,7 @@ git tag v0.x.y
 What this does:
 - Writes a `VERSION` file (git describe + UTC timestamp)
 - rsyncs the project to the NAS (does **not** overwrite NAS `.env`, local SQLite DBs, or media)
-- Rebuilds with `docker-compose.yml` + `docker-compose.qnap.yml` (production frontend build)
+- Rebuilds with `docker-compose.yml` + `docker-compose.qnap.yml` (static nginx frontend via `frontend/Dockerfile.prod`, not Vite dev)
 - Runs `alembic upgrade head` on the NAS backend
 
 Useful flags: `--dry-run`, `--skip-migrations`, `--debug`, `--path /share/Container/kinesis-deploy`
@@ -32,6 +32,20 @@ Useful flags: `--dry-run`, `--skip-migrations`, `--debug`, `--path /share/Contai
 Defaults live in [`scripts/nas-config.sh`](scripts/nas-config.sh) (`NAS_IP`, `NAS_USER`, `NAS_PATH`).
 
 **Deploy never syncs the database.** Use the DB sync commands below when you want to move training data.
+
+### Postgres password mismatch
+
+`POSTGRES_PASSWORD` is applied only when the Postgres volume is first created. If NAS `.env` `DB_PASSWORD` later differs, migrations fail with `password authentication failed`.
+
+`./deploy-qnap.sh` now aligns the role password from `.env` before Alembic. To fix manually on the NAS:
+
+```bash
+cd /share/Container/kinesis-deploy
+# Use the DB_PASSWORD value from your .env:
+docker exec -i trainingplan_postgres \
+  psql -U trainingplan_user -d trainingplan \
+  -c "ALTER USER trainingplan_user WITH PASSWORD 'YOUR_DB_PASSWORD_FROM_ENV';"
+```
 
 ---
 
@@ -48,16 +62,19 @@ Both sides must use **Postgres** (NAS already does via Compose). One-time Mac se
 #   DB_HOST=localhost
 ```
 
-Then sync explicitly (full replace, with automatic target backup under `backups/db/`):
+Then sync explicitly (automatic target backup under `backups/db/`):
 
 ```bash
-./scripts/db-sync.sh pull                 # NAS → Mac (overwrite local)
-./scripts/db-sync.sh push                 # Mac → NAS (overwrite NAS)
-./scripts/db-sync.sh pull --with-uploads  # also sync uploads volume
-./scripts/db-sync.sh push --yes           # skip typed confirmation
+./scripts/db-sync.sh push                      # Mac → NAS (normal; KEEP NAS users/settings)
+./scripts/db-sync.sh push --with-uploads
+./scripts/db-sync.sh push --full               # also overwrite NAS users (type push-full)
+./scripts/db-sync.sh pull --allow-pull         # NAS → Mac (blocked unless --allow-pull)
+./scripts/db-sync.sh push --yes                # skip typed confirmation (push only)
 ```
 
-You must type `pull` or `push` to confirm (unless `--yes`). This is not a merge — the destination DB is replaced.
+**Default safeguard:** destination `users` table is restored after sync, so passwords, Garmin/ICU tokens, and zone settings are not overwritten. Use `--full` only when you intentionally want to clone accounts/settings too (confirm by typing `pull-full` / `push-full`).
+
+**Pull is blocked by default** (`NAS → Mac`) so a empty/broken NAS DB cannot wipe a working Mac copy. When you really need it: `./scripts/db-sync.sh pull --allow-pull` and type `overwrite-mac-from-nas`.
 
 ---
 

@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.models.garmin_activity import GarminActivity
 from src.utils.datetime_helpers import date_to_string, compare_date_for_sqlite
+from src.utils.sport_types import matches_sport_filter
 
 # Exponential decay factors (precomputed for performance)
 CTL_TIME_CONSTANT = 42
@@ -71,28 +72,32 @@ async def calculate_training_load_metrics(
         GarminActivity.user_id == user_id
     )
     
-    if sport_type:
-        # Apply sport filter if specified
-        sport_type_lower = sport_type.lower()
-        if sport_type_lower == 'running':
-            first_activity_query = first_activity_query.where(
-                GarminActivity.activity_type.in_(['running', 'trail_running', 'treadmill_running', 'virtual_run'])
-            )
-        elif sport_type_lower == 'cycling':
-            first_activity_query = first_activity_query.where(
-                GarminActivity.activity_type.in_(['cycling', 'virtual_ride', 'indoor_cycling', 'mountain_biking'])
-            )
-        elif sport_type_lower == 'swimming':
-            first_activity_query = first_activity_query.where(
-                GarminActivity.activity_type.in_(['swimming', 'lap_swimming', 'open_water_swimming'])
-            )
-    
     result = await db.execute(first_activity_query)
     first_activity_date = result.scalar()
     
     if not first_activity_date:
-        # No activities found
         return []
+    
+    # Sport-filtered CTL must start from the first activity of that family
+    # (Garmin keys like road_biking are not covered by brittle IN lists).
+    if sport_type:
+        all_dates = (
+            await db.execute(
+                select(
+                    GarminActivity.start_time_local,
+                    GarminActivity.activity_type,
+                )
+                .where(GarminActivity.user_id == user_id)
+                .order_by(GarminActivity.start_time_local)
+            )
+        ).all()
+        first_sport_date = next(
+            (row.start_time_local for row in all_dates if matches_sport_filter(row.activity_type, sport_type)),
+            None,
+        )
+        if not first_sport_date:
+            return []
+        first_activity_date = first_sport_date
     
     # Parse the date string (SQLite returns ISO string format)
     if isinstance(first_activity_date, str):
@@ -117,7 +122,7 @@ async def calculate_training_load_metrics(
     ).where(
         GarminActivity.user_id == user_id,
         GarminActivity.start_time_local >= compare_date_for_sqlite(start_date),
-        GarminActivity.start_time_local <= end_date_inclusive.strftime("%Y-%m-%d %H:%M:%S")
+        GarminActivity.start_time_local <= end_date_inclusive,
     ).order_by(GarminActivity.start_time_local)
     
     result = await db.execute(query)
@@ -126,21 +131,8 @@ async def calculate_training_load_metrics(
     # Group activities by date and sum TSS (with optional sport filter)
     daily_tss: Dict[str, float] = {}
     for activity in activities:
-        # Apply sport filter if specified
-        if sport_type:
-            activity_type_lower = (activity.activity_type or '').lower()
-            filter_sport = sport_type.lower()
-            
-            # Use comprehensive activity type lists (same as analytics.py)
-            if filter_sport == 'running':
-                if activity_type_lower not in ['running', 'trail_running', 'treadmill_running', 'virtual_run']:
-                    continue
-            elif filter_sport == 'cycling':
-                if activity_type_lower not in ['cycling', 'virtual_ride', 'indoor_cycling', 'mountain_biking']:
-                    continue
-            elif filter_sport == 'swimming':
-                if activity_type_lower not in ['swimming', 'lap_swimming', 'open_water_swimming']:
-                    continue
+        if sport_type and not matches_sport_filter(activity.activity_type, sport_type):
+            continue
         
         date_str = date_to_string(activity.start_time_local)
         tss = activity.calculated_tss or 0

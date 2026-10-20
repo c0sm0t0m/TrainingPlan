@@ -156,10 +156,11 @@ Open browser: http://localhost:5173
    docker compose up -d postgres redis
    ```
 
-2. **Update .env back to PostgreSQL**:
+2. **Point the Mac API at the NAS Postgres** (do not use localhost or SQLite):
    ```bash
-   DATABASE_URL=postgresql+asyncpg://trainingplan_user:TraniningPlan.Pwd.2026@localhost:5432/trainingplan
+   DATABASE_URL=postgresql+asyncpg://trainingplan_user:<DB_PASSWORD>@192.168.178.42:5432/trainingplan
    ```
+   The password is `DB_PASSWORD` in the repo-root `.env`.
 
 3. **Run migrations**:
    ```bash

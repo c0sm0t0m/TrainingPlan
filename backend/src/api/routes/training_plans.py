@@ -7,6 +7,7 @@ import json
 from fastapi import APIRouter, Depends, HTTPException, status, Body
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
+from sqlalchemy.orm import load_only
 
 from src.database import get_db
 from src.models.user import User
@@ -24,6 +25,34 @@ from src.api.routes.auth import get_current_active_user
 from src.utils.workout_xml import parse_workout_xml, validate_workout_data
 
 router = APIRouter(prefix="/training-plans", tags=["training-plans"])
+
+
+def _workout_schema(w: Workout) -> WorkoutSchema:
+    return WorkoutSchema(
+        id=w.id,
+        training_plan_id=w.training_plan_id,
+        date=w.date,
+        sport_type=w.sport_type,
+        workout_type=w.workout_type,
+        title=w.title,
+        description=w.description,
+        duration_minutes=w.duration_minutes,
+        distance_km=w.distance_km,
+        intensity_zone=w.intensity_zone,
+        target_tss=w.target_tss,
+        is_completed=bool(w.is_completed),
+        actual_duration_minutes=w.actual_duration_minutes,
+        actual_distance_km=w.actual_distance_km,
+        notes=w.notes,
+        structured_workout_json=w.structured_workout_json,
+        icu_sync_status=w.icu_sync_status,
+        matched_activity_id=w.matched_activity_id,
+        match_confidence=w.match_confidence,
+        match_status=w.match_status,
+        matched_at=w.matched_at,
+        created_at=w.created_at,
+        updated_at=w.updated_at,
+    )
 
 
 @router.get("", response_model=List[TrainingPlanSummary])
@@ -123,6 +152,82 @@ async def create_training_plan(
     )
 
 
+@router.get("/calendar-workouts")
+async def calendar_workouts(
+    current_user: User = Depends(get_current_active_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Active-plan workouts for the calendar, without structured workout JSON."""
+    plans = (
+        await db.execute(
+            select(TrainingPlan)
+            .options(
+                load_only(
+                    TrainingPlan.id,
+                    TrainingPlan.name,
+                    TrainingPlan.sport_type,
+                )
+            )
+            .where(
+                TrainingPlan.user_id == current_user.id,
+                TrainingPlan.is_active == 1,
+            )
+        )
+    ).scalars().all()
+    if not plans:
+        return {"plans": [], "workouts": []}
+
+    plan_ids = [plan.id for plan in plans]
+    # Skip structured_workout_json and notes — those blobs are unused on the calendar
+    # and dominate transfer time from Postgres.
+    workouts = (
+        await db.execute(
+            select(Workout)
+            .options(
+                load_only(
+                    Workout.id,
+                    Workout.training_plan_id,
+                    Workout.date,
+                    Workout.sport_type,
+                    Workout.workout_type,
+                    Workout.title,
+                    Workout.duration_minutes,
+                    Workout.distance_km,
+                    Workout.intensity_zone,
+                    Workout.target_tss,
+                    Workout.is_completed,
+                    Workout.matched_activity_id,
+                )
+            )
+            .where(Workout.training_plan_id.in_(plan_ids))
+        )
+    ).scalars().all()
+
+    return {
+        "plans": [
+            {"id": plan.id, "name": plan.name, "sport_type": plan.sport_type}
+            for plan in plans
+        ],
+        "workouts": [
+            {
+                "id": workout.id,
+                "training_plan_id": workout.training_plan_id,
+                "date": workout.date.isoformat() if workout.date else None,
+                "sport_type": workout.sport_type,
+                "workout_type": workout.workout_type,
+                "title": workout.title,
+                "duration_minutes": workout.duration_minutes,
+                "distance_km": workout.distance_km,
+                "intensity_zone": workout.intensity_zone,
+                "target_tss": workout.target_tss,
+                "is_completed": bool(workout.is_completed),
+                "matched_activity_id": workout.matched_activity_id,
+            }
+            for workout in workouts
+        ],
+    }
+
+
 @router.get("/{plan_id}", response_model=TrainingPlanSchema)
 async def get_training_plan(
     plan_id: int,
@@ -163,25 +268,7 @@ async def get_training_plan(
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
-            WorkoutSchema(
-                id=w.id,
-                training_plan_id=w.training_plan_id,
-                date=w.date,
-                sport_type=w.sport_type,
-                workout_type=w.workout_type,
-                title=w.title,
-                description=w.description,
-                duration_minutes=w.duration_minutes,
-                distance_km=w.distance_km,
-                intensity_zone=w.intensity_zone,
-                target_tss=w.target_tss,
-                is_completed=bool(w.is_completed),
-                actual_duration_minutes=w.actual_duration_minutes,
-                actual_distance_km=w.actual_distance_km,
-                notes=w.notes,
-                created_at=w.created_at,
-                updated_at=w.updated_at,
-            )
+            _workout_schema(w)
             for w in workouts
         ]
     )
@@ -245,25 +332,7 @@ async def update_training_plan(
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
-            WorkoutSchema(
-                id=w.id,
-                training_plan_id=w.training_plan_id,
-                date=w.date,
-                sport_type=w.sport_type,
-                workout_type=w.workout_type,
-                title=w.title,
-                description=w.description,
-                duration_minutes=w.duration_minutes,
-                distance_km=w.distance_km,
-                intensity_zone=w.intensity_zone,
-                target_tss=w.target_tss,
-                is_completed=bool(w.is_completed),
-                actual_duration_minutes=w.actual_duration_minutes,
-                actual_distance_km=w.actual_distance_km,
-                notes=w.notes,
-                created_at=w.created_at,
-                updated_at=w.updated_at,
-            )
+            _workout_schema(w)
             for w in workouts
         ]
     )
@@ -371,25 +440,7 @@ async def activate_training_plan(
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
-            WorkoutSchema(
-                id=w.id,
-                training_plan_id=w.training_plan_id,
-                date=w.date,
-                sport_type=w.sport_type,
-                workout_type=w.workout_type,
-                title=w.title,
-                description=w.description,
-                duration_minutes=w.duration_minutes,
-                distance_km=w.distance_km,
-                intensity_zone=w.intensity_zone,
-                target_tss=w.target_tss,
-                is_completed=bool(w.is_completed),
-                actual_duration_minutes=w.actual_duration_minutes,
-                actual_distance_km=w.actual_distance_km,
-                notes=w.notes,
-                created_at=w.created_at,
-                updated_at=w.updated_at,
-            )
+            _workout_schema(w)
             for w in workouts
         ]
     )
@@ -440,25 +491,7 @@ async def deactivate_training_plan(
         created_at=plan.created_at,
         updated_at=plan.updated_at,
         workouts=[
-            WorkoutSchema(
-                id=w.id,
-                training_plan_id=w.training_plan_id,
-                date=w.date,
-                sport_type=w.sport_type,
-                workout_type=w.workout_type,
-                title=w.title,
-                description=w.description,
-                duration_minutes=w.duration_minutes,
-                distance_km=w.distance_km,
-                intensity_zone=w.intensity_zone,
-                target_tss=w.target_tss,
-                is_completed=bool(w.is_completed),
-                actual_duration_minutes=w.actual_duration_minutes,
-                actual_distance_km=w.actual_distance_km,
-                notes=w.notes,
-                created_at=w.created_at,
-                updated_at=w.updated_at,
-            )
+            _workout_schema(w)
             for w in workouts
         ]
     )

@@ -22,6 +22,7 @@ interface Workout {
   target_tss?: number;
   tss?: number;
   is_completed?: boolean;
+  matched_activity_id?: number | null;
 }
 
 interface GarminActivity {
@@ -43,6 +44,7 @@ const getSportColorDot = (sportType: string): string => {
   if (type.includes('run')) return '#f44336'; // red
   if (type.includes('bike') || type.includes('cycling')) return '#2196f3'; // blue
   if (type.includes('swim')) return '#4caf50'; // green
+  if (type.includes('tennis')) return '#F9A825';
   return '#9e9e9e'; // grey for strength/other
 };
 
@@ -65,20 +67,10 @@ export default function MonthCalendarView({
   const getDayData = (date: Date) => {
     const dateStr = format(date, 'yyyy-MM-dd');
     
-    const dayWorkouts = workouts.filter(w => w.date === dateStr);
-    const dayActivities = activities.filter(a => a.date === dateStr);
+    const dayWorkouts = workouts.filter(w => w.date.slice(0, 10) === dateStr && !w.matched_activity_id);
+    const dayActivities = activities.filter(a => a.date.slice(0, 10) === dateStr);
     
-    // Show completed TSS if available, otherwise show target TSS
-    const completedTSS = [
-      ...dayWorkouts.filter(w => w.is_completed).map(w => w.tss || 0),
-      ...dayActivities.map(a => a.calculated_tss || 0)
-    ].reduce((sum, tss) => sum + tss, 0);
-    
-    const targetTSS = dayWorkouts
-      .filter(w => !w.is_completed)
-      .reduce((sum, w) => sum + (w.target_tss || 0), 0);
-    
-    const totalTSS = completedTSS > 0 ? completedTSS : targetTSS;
+    const totalTSS = dayActivities.reduce((sum, a) => sum + (a.calculated_tss || 0), 0);
     
     // Get unique sports for dot indicators
     const sports = new Set([
@@ -86,7 +78,7 @@ export default function MonthCalendarView({
       ...dayActivities.map(a => a.activity_type)
     ]);
     
-    return { totalTSS, sports: Array.from(sports), hasTarget: targetTSS > 0 && completedTSS === 0 };
+    return { totalTSS, sports: Array.from(sports), hasTarget: false };
   };
 
   const getHeatmapColor = (tss: number): string => {

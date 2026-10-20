@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react'
 import { Card, CardContent, Typography, Box, Grid } from '@mui/material'
 import { LineChart, Line, ResponsiveContainer, YAxis } from 'recharts'
 import api from '../services/api'
+import { enqueue } from '../utils/requestQueue'
+import { LoadPoint } from '../utils/trainingLoad'
 import { DirectionsRun, DirectionsBike, Pool } from '@mui/icons-material'
 
 interface SportFitnessWidgetProps {
@@ -56,31 +58,37 @@ export default function SportFitnessWidget({ sport }: SportFitnessWidgetProps) {
   const Icon = config.icon
 
   useEffect(() => {
+    let cancelled = false
+
     const fetchData = async () => {
       try {
-        const [metricsRes, data7, data28, data90, data365] = await Promise.all([
-          api.get(`/garmin/training-metrics?sport_type=${sport}`),
-          api.get(`/garmin/training-load?days=7&sport_type=${sport}`),
-          api.get(`/garmin/training-load?days=28&sport_type=${sport}`),
-          api.get(`/garmin/training-load?days=90&sport_type=${sport}`),
-          api.get(`/garmin/training-load?days=365&sport_type=${sport}`)
-        ])
-
-        setMetrics(metricsRes.data)
+        // One full-history calculation per sport. 7d/28d/90d are slices of it.
+        const response = await enqueue(() =>
+          api.get<LoadPoint[]>(`/garmin/training-load?days=365&sport_type=${sport}`),
+        )
+        if (cancelled) return
+        const series = response.data
+        const current = series[series.length - 1]
+        if (current) {
+          setMetrics({ ctl: current.ctl, atl: current.atl, tsb: current.tsb })
+        }
         setChartData({
-          days7: data7.data,
-          days28: data28.data,
-          days90: data90.data,
-          days365: data365.data
+          days7: series.slice(-7),
+          days28: series.slice(-28),
+          days90: series.slice(-90),
+          days365: series,
         })
       } catch (error) {
         console.error(`Failed to fetch ${sport} metrics:`, error)
       } finally {
-        setLoading(false)
+        if (!cancelled) setLoading(false)
       }
     }
 
     fetchData()
+    return () => {
+      cancelled = true
+    }
   }, [sport])
 
   const renderMiniChart = (data: PerformanceData[], label: string) => (

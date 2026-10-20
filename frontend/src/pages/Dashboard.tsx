@@ -1,14 +1,17 @@
-import { useEffect, useState } from 'react'
-import { Container, Box, Typography, Card, CardContent, Grid, ToggleButtonGroup, ToggleButton } from '@mui/material'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
+import { Container, Box, Typography, Card, CardContent, Grid, ToggleButtonGroup, ToggleButton, CircularProgress } from '@mui/material'
+import { FitnessCenter, TrendingUp, Speed, Timeline, DirectionsRun, Favorite } from '@mui/icons-material'
 import { useNavigate } from 'react-router-dom'
 import { useAuthStore } from '../store/authStore'
 import api from '../services/api'
 import MetricCard from '../components/MetricCard'
-import PerformanceChart from '../components/PerformanceChart'
-import SportFitnessWidget from '../components/SportFitnessWidget'
 import EmptyState from '../components/EmptyState'
 import DashboardSkeleton from '../components/skeletons/DashboardSkeleton'
-import { FitnessCenter, TrendingUp, Speed, Timeline, DirectionsRun, Favorite } from '@mui/icons-material'
+import { enqueue } from '../utils/requestQueue'
+import { LoadPoint, summarizeLoad } from '../utils/trainingLoad'
+
+const PerformanceChart = lazy(() => import('../components/PerformanceChart'))
+const SportFitnessWidget = lazy(() => import('../components/SportFitnessWidget'))
 
 interface ActivityStats {
   total_activities: number
@@ -22,13 +25,6 @@ interface TrainingMetrics {
   tsb: number
   weekly_tss: number
   trend: 'up' | 'down' | 'flat'
-}
-
-interface PerformanceData {
-  date: string
-  ctl: number
-  atl: number
-  tsb: number
 }
 
 interface HRVStatus {
@@ -49,9 +45,15 @@ export default function Dashboard() {
     weekly_tss: 0,
     trend: 'flat'
   })
-  const [performanceData, setPerformanceData] = useState<PerformanceData[]>([])
-  const [loading, setLoading] = useState(true)
-  const [timeRange, setTimeRange] = useState<number>(365)
+  const [performanceData, setPerformanceData] = useState<LoadPoint[]>([])
+  const [statsLoaded, setStatsLoaded] = useState(false)
+  const [metricsLoading, setMetricsLoading] = useState(true)
+  const [chartLoading, setChartLoading] = useState(true)
+  const [timeRange, setTimeRange] = useState<number>(90)
+  const timeRangeRef = useRef(timeRange)
+  timeRangeRef.current = timeRange
+  const seriesRef = useRef<LoadPoint[]>([])
+  const initialLoadRef = useRef<Promise<void>>(Promise.resolve())
   const [hrvStatus, setHrvStatus] = useState<HRVStatus | null>(null)
 
   // Set document title
@@ -68,63 +70,94 @@ export default function Dashboard() {
   }, [isAuthenticated, user, navigate, fetchUser])
 
   useEffect(() => {
+    if (!isAuthenticated || !user) return
+    let cancelled = false
+
+    const applyHrv = (hrvResponse: { data: { data?: Array<{ rmssd_7day_avg?: number; rmssd_30day_lower?: number; rmssd_30day_upper?: number }> } }) => {
+      if (!hrvResponse.data.data || hrvResponse.data.data.length === 0) return
+      const latestData = hrvResponse.data.data[hrvResponse.data.data.length - 1]
+      if (!latestData?.rmssd_7day_avg) return
+      const value = Math.round(latestData.rmssd_7day_avg)
+      const lower = Math.round(latestData.rmssd_30day_lower || 0)
+      const upper = Math.round(latestData.rmssd_30day_upper || 0)
+      setHrvStatus({
+        value,
+        isInRange: value >= lower && value <= upper,
+        threshold_lower: lower,
+        threshold_upper: upper,
+      })
+    }
+
     const fetchStats = async () => {
       try {
-        // Fetch activity stats
         const statsResponse = await api.get('/garmin/activities/stats')
-        setActivityStats(statsResponse.data)
-        
-        // Fetch real training load metrics from backend
-        const [metricsResponse, loadResponse, hrvResponse] = await Promise.all([
-          api.get('/garmin/training-metrics'),
-          api.get(`/garmin/training-load?days=${timeRange}`),
-          api.get('/garmin/hrv?days=7').catch(() => ({ data: { data: [] } })) // Fail gracefully
-        ])
-        
-        setTrainingMetrics(metricsResponse.data)
-        setPerformanceData(loadResponse.data)
-        
-        // Extract latest 7-day average HRV and status
-        if (hrvResponse.data.data && hrvResponse.data.data.length > 0) {
-          const latestData = hrvResponse.data.data[hrvResponse.data.data.length - 1]
-          if (latestData && latestData.rmssd_7day_avg) {
-            const value = Math.round(latestData.rmssd_7day_avg)
-            const lower = Math.round(latestData.rmssd_30day_lower || 0)
-            const upper = Math.round(latestData.rmssd_30day_upper || 0)
-            const isInRange = value >= lower && value <= upper
-            
-            setHrvStatus({
-              value,
-              isInRange,
-              threshold_lower: lower,
-              threshold_upper: upper
-            })
-          }
-        }
-        
+        if (!cancelled) setActivityStats(statsResponse.data)
       } catch (error) {
         console.error('Failed to fetch activity stats:', error)
-        // Set default values on error
-        setActivityStats({
-          total_activities: 0,
-          activities_this_week: 0,
-          activities_this_month: 0
-        })
-        setTrainingMetrics({
-          ctl: 0,
-          atl: 0,
-          tsb: 0,
-          weekly_tss: 0,
-          trend: 'flat'
-        })
-        setPerformanceData([])
+        try {
+          const stored = await api.get('/garmin/activities/stored', { params: { limit: 1 } })
+          const hasAny = Array.isArray(stored.data) && stored.data.length > 0
+          if (!cancelled) {
+            setActivityStats({
+              total_activities: hasAny ? 1 : 0,
+              activities_this_week: 0,
+              activities_this_month: 0,
+            })
+          }
+        } catch {
+          if (!cancelled) setActivityStats(null)
+        }
       } finally {
-        setLoading(false)
+        if (!cancelled) setStatsLoaded(true)
       }
     }
 
-    if (isAuthenticated && user) {
-      fetchStats()
+    const fetchHrv = async () => {
+      const hrvResponse = await api.get('/garmin/hrv?days=7').catch(() => ({ data: { data: [] } }))
+      if (!cancelled) applyHrv(hrvResponse)
+    }
+
+    fetchStats()
+    fetchHrv()
+    return () => {
+      cancelled = true
+    }
+  }, [isAuthenticated, user])
+
+  useEffect(() => {
+    if (!isAuthenticated || !user) return
+    let cancelled = false
+
+    const cached = seriesRef.current
+    if (cached.length >= timeRange) {
+      setPerformanceData(cached.slice(-timeRange))
+      setTrainingMetrics(summarizeLoad(cached))
+      setMetricsLoading(false)
+      setChartLoading(false)
+      return
+    }
+
+    setChartLoading(true)
+    const load = enqueue(() => api.get<LoadPoint[]>(`/garmin/training-load?days=${timeRange}`))
+      .then((loadResponse) => {
+        if (cancelled || !loadResponse?.data) return
+        seriesRef.current = loadResponse.data
+        setPerformanceData(loadResponse.data)
+        setTrainingMetrics(summarizeLoad(loadResponse.data))
+      })
+      .catch((err) => {
+        console.error('training-load failed', err)
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setChartLoading(false)
+          setMetricsLoading(false)
+        }
+      })
+
+    initialLoadRef.current = load
+    return () => {
+      cancelled = true
     }
   }, [isAuthenticated, user, timeRange])
 
@@ -167,35 +200,40 @@ export default function Dashboard() {
             console.log('Auto-syncing Garmin data (initial sync: 7 days)')
           }
           
-          if (shouldSync) {
-            // Sync activities and health data in parallel with adaptive days
-            await Promise.all([
-              api.post('/garmin/sync-activities', { days: syncDays, include_details: false }, {
-                timeout: Math.min(180000, Math.max(60000, syncDays * 5000)),
-              }),
-              api.post('/garmin/sync-health-data', { days: syncDays }).catch(err => {
-                console.log('Health data sync skipped:', err)
-              })
-            ])
-            
-            // Update last sync timestamp
-            localStorage.setItem(lastSyncKey, now.toString())
-            console.log('Auto-sync completed')
-          }
-          
-          // Refresh all stats (whether we synced or not)
-          const [statsResponse, metricsResponse, loadResponse, hrvResponse] = await Promise.all([
-            api.get('/garmin/activities/stats'),
-            api.get('/garmin/training-metrics'),
-            api.get(`/garmin/training-load?days=${timeRange}`),
-            api.get('/garmin/hrv?days=7').catch(() => ({ data: { data: [] } }))
+          if (!shouldSync) return
+
+          await Promise.all([
+            api.post('/garmin/sync-activities', { days: syncDays, include_details: false }, {
+              timeout: Math.min(180000, Math.max(60000, syncDays * 5000)),
+            }),
+            api.post('/garmin/sync-health-data', { days: syncDays }).catch(err => {
+              console.log('Health data sync skipped:', err)
+            })
           ])
-          
-          setActivityStats(statsResponse.data)
-          setTrainingMetrics(metricsResponse.data)
-          setPerformanceData(loadResponse.data)
-          
-          // Update HRV status
+
+          localStorage.setItem(lastSyncKey, now.toString())
+          console.log('Auto-sync completed')
+
+          const days = timeRangeRef.current
+          const [statsResponse, loadResponse, hrvResponse] = await Promise.all([
+            api.get('/garmin/activities/stats').catch((err) => {
+              console.error('post-sync stats failed', err)
+              return null
+            }),
+            enqueue(() => api.get<LoadPoint[]>(`/garmin/training-load?days=${days}`)).catch((err) => {
+              console.error('post-sync load failed', err)
+              return null
+            }),
+            api.get('/garmin/hrv?days=7').catch(() => ({ data: { data: [] } })),
+          ])
+
+          if (statsResponse?.data) setActivityStats(statsResponse.data)
+          if (loadResponse?.data) {
+            seriesRef.current = loadResponse.data
+            setPerformanceData(loadResponse.data.slice(-days))
+            setTrainingMetrics(summarizeLoad(loadResponse.data))
+          }
+
           if (hrvResponse.data.data && hrvResponse.data.data.length > 0) {
             const latestData = hrvResponse.data.data[hrvResponse.data.data.length - 1]
             if (latestData && latestData.rmssd_7day_avg) {
@@ -203,25 +241,29 @@ export default function Dashboard() {
               const lower = Math.round(latestData.rmssd_30day_lower || 0)
               const upper = Math.round(latestData.rmssd_30day_upper || 0)
               const isInRange = value >= lower && value <= upper
-              
+
               setHrvStatus({
                 value,
                 isInRange,
                 threshold_lower: lower,
-                threshold_upper: upper
+                threshold_upper: upper,
               })
             }
           }
         }
       } catch (error) {
-        // Fail silently - don't interrupt user experience
         console.log('Auto-sync skipped or failed:', error)
       }
     }
 
     if (isAuthenticated && user) {
-      // Run after a short delay to let the page load first
-      setTimeout(autoSync, 2000)
+      let cancelled = false
+      initialLoadRef.current.finally(() => {
+        if (!cancelled) autoSync()
+      })
+      return () => {
+        cancelled = true
+      }
     }
   }, [isAuthenticated, user])
 
@@ -235,8 +277,7 @@ export default function Dashboard() {
     )
   }
 
-  // Empty state when user has no activities
-  if (activityStats?.total_activities === 0 && !loading) {
+  if (statsLoaded && activityStats?.total_activities === 0) {
     return (
       <Container maxWidth="lg" sx={{ py: 3 }}>
         <Box sx={{ mb: 3 }}>
@@ -247,9 +288,9 @@ export default function Dashboard() {
         <EmptyState
           icon={<DirectionsRun />}
           title="No activities yet"
-          description="Connect your Garmin account to automatically sync your activities and start tracking your training progress."
-          actionLabel="Connect Garmin"
-          onAction={() => navigate('/settings?tab=1')}
+          description="No activities found for this account. If Garmin is already connected, open Settings and run a sync — or check that Mac→NAS push finished with activities."
+          actionLabel="Open Settings"
+          onAction={() => navigate('/settings')}
           secondaryActionLabel="View Calendar"
           onSecondaryAction={() => navigate('/calendar')}
         />
@@ -257,14 +298,7 @@ export default function Dashboard() {
     )
   }
 
-  // Loading skeleton
-  if (loading) {
-    return (
-      <Container maxWidth="lg" sx={{ py: 3 }}>
-        <DashboardSkeleton />
-      </Container>
-    )
-  }
+  const metricValue = (value: number) => (metricsLoading ? '—' : value)
 
   return (
     <Container maxWidth="lg" sx={{ py: 3 }}>
@@ -279,7 +313,7 @@ export default function Dashboard() {
           <Grid item xs={4} sm={6} md={4}>
             <MetricCard
               title="Fitness (CTL)"
-              value={trainingMetrics.ctl}
+              value={metricValue(trainingMetrics.ctl)}
               color="#2196f3"
               icon={<FitnessCenter />}
               trend={trainingMetrics.trend}
@@ -290,7 +324,7 @@ export default function Dashboard() {
           <Grid item xs={4} sm={6} md={4}>
             <MetricCard
               title="Fatigue (ATL)"
-              value={trainingMetrics.atl}
+              value={metricValue(trainingMetrics.atl)}
               color="#ff9800"
               icon={<TrendingUp />}
               compact
@@ -299,7 +333,7 @@ export default function Dashboard() {
           <Grid item xs={4} sm={6} md={4}>
             <MetricCard
               title="Form (TSB)"
-              value={trainingMetrics.tsb}
+              value={metricValue(trainingMetrics.tsb)}
               color={trainingMetrics.tsb > 0 ? '#4caf50' : '#f44336'}
               icon={<Speed />}
               compact
@@ -310,7 +344,7 @@ export default function Dashboard() {
           <Grid item xs={6} sm={6} md={6}>
             <MetricCard
               title="Weekly TSS"
-              value={trainingMetrics.weekly_tss}
+              value={metricValue(trainingMetrics.weekly_tss)}
               color="primary.main"
               icon={<Timeline />}
               compact
@@ -319,7 +353,7 @@ export default function Dashboard() {
           <Grid item xs={6} sm={6} md={6}>
             <MetricCard
               title="HRV Status"
-              value={hrvStatus?.value || 0}
+              value={hrvStatus ? hrvStatus.value : '—'}
               unit="ms"
               color={hrvStatus?.isInRange ? '#4caf50' : '#f44336'}
               icon={<Favorite />}
@@ -328,7 +362,8 @@ export default function Dashboard() {
             />
           </Grid>
 
-          {/* Sport-Specific Fitness Widgets */}
+          {!metricsLoading && (
+          <Suspense fallback={null}>
           <Grid item xs={12} md={4}>
             <SportFitnessWidget sport="running" />
           </Grid>
@@ -338,6 +373,8 @@ export default function Dashboard() {
           <Grid item xs={12} md={4}>
             <SportFitnessWidget sport="swimming" />
           </Grid>
+          </Suspense>
+          )}
 
           {/* Performance Chart */}
           <Grid item xs={12}>
@@ -360,7 +397,19 @@ export default function Dashboard() {
                     <ToggleButton value={730}>2y</ToggleButton>
                   </ToggleButtonGroup>
                 </Box>
-                <PerformanceChart data={performanceData} />
+                {chartLoading ? (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 300 }}>
+                    <CircularProgress size={28} />
+                  </Box>
+                ) : (
+                  <Suspense fallback={
+                    <Box sx={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: 300 }}>
+                      <CircularProgress size={28} />
+                    </Box>
+                  }>
+                    <PerformanceChart data={performanceData} />
+                  </Suspense>
+                )}
               </CardContent>
             </Card>
           </Grid>

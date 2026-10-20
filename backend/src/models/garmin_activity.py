@@ -2,7 +2,7 @@
 Garmin Activity Database Model
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Boolean, Text, JSON
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Float, Boolean, Text, JSON, Index
 from sqlalchemy.orm import relationship
 
 from src.database import Base
@@ -11,6 +11,9 @@ from src.database import Base
 class GarminActivity(Base):
     """Garmin activity model - stores synced activities from Garmin Connect"""
     __tablename__ = "garmin_activities"
+    __table_args__ = (
+        Index("ix_garmin_activities_user_start", "user_id", "start_time_local"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)

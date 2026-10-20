@@ -31,6 +31,13 @@ if [ ! -f ".env" ]; then
     echo "   Copy .env.example to .env and configure it"
 fi
 
+# Dev and production share the NAS Postgres. A local SQLite file drifts.
+if grep -q '^DATABASE_URL=sqlite' .env 2>/dev/null; then
+    echo "❌ DATABASE_URL points at SQLite."
+    echo "   Local dev uses the NAS Postgres (192.168.178.42). Refusing to start."
+    exit 1
+fi
+
 echo ""
 echo "📡 Starting FastAPI server on http://0.0.0.0:8000 (accessible via LAN)"
 echo "📚 API Documentation: http://localhost:8000/docs"

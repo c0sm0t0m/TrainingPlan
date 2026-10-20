@@ -82,14 +82,16 @@ export default function HRZoneDistributionWidget({ daysBack = 90 }: HRZoneDistri
     count: point.activity_count
   }));
 
-  // Color zones progressively from blue (recovery) to red (max)
+  // Color zones progressively from blue (recovery) to red (max) — Friel has 7 zones
   const getZoneColor = (zoneNumber: number) => {
     const colors = [
       theme.palette.info.light,      // Zone 1 - Recovery
-      theme.palette.info.main,       // Zone 2 - Endurance
+      theme.palette.info.main,       // Zone 2 - Aerobic
       theme.palette.success.main,    // Zone 3 - Tempo
-      theme.palette.warning.main,    // Zone 4 - Threshold
-      theme.palette.error.main,      // Zone 5 - VO2max
+      theme.palette.success.dark,    // Zone 4 - Sub-Threshold
+      theme.palette.warning.main,    // Zone 5 - Super-Threshold
+      theme.palette.error.light,     // Zone 6 - Aerobic Capacity
+      theme.palette.error.main,      // Zone 7 - Anaerobic Capacity
     ];
     return colors[zoneNumber - 1] || theme.palette.grey[500];
   };
@@ -166,7 +168,7 @@ export default function HRZoneDistributionWidget({ daysBack = 90 }: HRZoneDistri
         <Box sx={{ flex: 1 }}>
           <Typography variant="h6">HR Zone Distribution</Typography>
           <Typography variant="caption" color="text.secondary">
-            Based on average HR per activity ({totalActivities} activities)
+            Based on average HR per activity vs sport LTHR ({totalActivities} activities)
           </Typography>
         </Box>
       </Box>

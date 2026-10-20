@@ -22,22 +22,25 @@ const getApiBaseUrl = (): string => {
       }
 
       console.warn(
-        `⚠️ Ignoring VITE_API_URL="${envUrl}" because app is running on "${currentHostname}".`
+        `Ignoring VITE_API_URL="${envUrl}" because app is running on "${currentHostname}".`
       )
     } catch {
-      console.warn(`⚠️ Invalid VITE_API_URL="${envUrl}", falling back to auto-detection.`)
+      console.warn(`Invalid VITE_API_URL="${envUrl}", falling back to auto-detection.`)
     }
   }
-  
-  // Use current hostname (works for localhost, IP address, or domain name)
+
+  // Production nginx proxies /api to the backend. Dev still calls :8000 directly.
+  if (import.meta.env.PROD) {
+    return '/api/v1'
+  }
+
   const protocol = window.location.protocol
   return `${protocol}//${currentHostname}:8000/api/v1`
 }
 
 const API_BASE_URL = getApiBaseUrl()
 
-// Log the API URL for debugging
-console.log('🌐 API Base URL:', API_BASE_URL)
+console.log('API Base URL:', API_BASE_URL)
 
 export const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -47,37 +50,33 @@ export const apiClient = axios.create({
   },
 })
 
-// Export function to get current API URL
 export const getApiUrl = () => API_BASE_URL
 
-// Request interceptor - add auth token
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('access_token')
     if (token) {
       config.headers.Authorization = `Bearer ${token}`
     }
+    // Analytics aggregates many activities from NAS Postgres; allow slower responses.
+    const url = String(config.url || '')
+    if (url.includes('/analytics/') || url.includes('/garmin/hrv')) {
+      config.timeout = Math.max(config.timeout ?? 0, 45000)
+    }
     return config
   },
-  (error) => {
-    return Promise.reject(error)
-  }
+  (error) => Promise.reject(error)
 )
 
-// Response interceptor - handle errors
 apiClient.interceptors.response.use(
   (response) => response,
   async (error) => {
     if (error.response?.status === 401) {
-      // Only logout if it's an authentication endpoint error
-      // Don't logout for 401 errors from third-party integrations like Garmin
-      const url = error.config?.url || ''
-      const isAuthEndpoint = url.includes('/auth/') || url.includes('/auth/me')
-      
-      if (isAuthEndpoint) {
-        // Token expired or invalid - redirect to login
+      const url = String(error.config?.url || '')
+      // Clear stale token on /auth/me failures only. Never hard-redirect here —
+      // full page reloads cause endless loops with auto-login / route guards.
+      if (url.includes('/auth/me')) {
         localStorage.removeItem('access_token')
-        window.location.href = '/login'
       }
     }
     return Promise.reject(error)

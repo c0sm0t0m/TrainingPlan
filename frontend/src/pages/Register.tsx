@@ -11,6 +11,7 @@ import {
   CircularProgress
 } from '@mui/material'
 import { useAuthStore } from '../store/authStore'
+import AuthDebugPanel from '../components/AuthDebugPanel'
 
 export default function Register() {
   const navigate = useNavigate()
@@ -137,6 +138,8 @@ export default function Register() {
               </Link>
             </Box>
           </Box>
+
+          <AuthDebugPanel />
         </Paper>
       </Box>
     </Container>

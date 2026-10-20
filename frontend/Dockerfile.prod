@@ -1,0 +1,30 @@
+# Production frontend: build static assets, serve with nginx.
+# Avoids Vite dev-server memory/CPU cost on QNAP.
+
+# Build static files on the Mac's own CPU. Only the nginx stage is linux/amd64,
+# so npm does not run under the emulator that exhausts memory.
+FROM --platform=$BUILDPLATFORM node:20-alpine AS build
+WORKDIR /app
+
+COPY package*.json ./
+RUN npm ci
+
+COPY . .
+
+# Never bake local auto-login into NAS/prod builds
+ENV VITE_DEV_AUTO_LOGIN=false
+
+# Skip `tsc` gate: repo has pre-existing TS strict errors that do not block Vite.
+# Typecheck remains available via `npm run type-check` locally/CI.
+RUN npx vite build
+
+FROM nginx:1.27-alpine
+COPY nginx.conf /etc/nginx/conf.d/default.conf
+COPY --from=build /app/dist /usr/share/nginx/html
+# Keep the originals; nginx gzip_static serves the sibling .gz when the
+# client accepts gzip. BusyBox gzip has no -k, so compress via stdout.
+RUN find /usr/share/nginx/html/assets -type f \( -name '*.js' -o -name '*.css' -o -name '*.svg' \) \
+    -exec sh -c 'gzip -9 -c "$1" > "$1.gz"' _ {} \;
+
+EXPOSE 3000
+CMD ["nginx", "-g", "daemon off;"]

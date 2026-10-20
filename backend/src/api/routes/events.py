@@ -19,6 +19,20 @@ from src.api.routes.auth import get_current_active_user
 router = APIRouter(prefix="/events", tags=["events"])
 
 
+async def _clear_other_main_goals(
+    db: AsyncSession, user_id: int, keep_id: int | None = None
+) -> None:
+    """Only one event is the main goal."""
+    result = await db.execute(
+        select(Event).where(
+            and_(Event.user_id == user_id, Event.is_main_goal == 1)
+        )
+    )
+    for other in result.scalars().all():
+        if keep_id is None or other.id != keep_id:
+            other.is_main_goal = 0
+
+
 @router.get("", response_model=List[EventSchema])
 async def list_events(
     skip: int = 0,
@@ -83,8 +97,12 @@ async def create_event(
         registration_link=event_data.registration_link,
         cost=event_data.cost,
         notes=event_data.notes,
+        is_main_goal=1 if event_data.is_main_goal else 0,
     )
-    
+
+    if event_data.is_main_goal:
+        await _clear_other_main_goals(db, current_user.id)
+
     db.add(event)
     await db.commit()
     await db.refresh(event)
@@ -116,8 +134,12 @@ async def update_event(
             detail="Event not found"
         )
     
-    # Update fields
     update_data = event_data.model_dump(exclude_unset=True)
+    if update_data.get("is_main_goal"):
+        await _clear_other_main_goals(db, current_user.id, keep_id=event.id)
+        update_data["is_main_goal"] = 1
+    elif "is_main_goal" in update_data:
+        update_data["is_main_goal"] = 0
     for field, value in update_data.items():
         setattr(event, field, value)
     

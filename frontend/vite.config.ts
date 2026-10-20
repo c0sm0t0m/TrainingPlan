@@ -1,33 +1,13 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import { VitePWA } from 'vite-plugin-pwa'
 
 // https://vitejs.dev/config/
+// PWA/service worker is intentionally off. NAS clients were precaching the
+// whole app and then main.tsx unregistered the worker, so the first visit
+// downloaded everything twice.
 export default defineConfig({
   plugins: [
     react(),
-    VitePWA({
-      registerType: 'autoUpdate',
-      includeAssets: ['favicon.ico', 'robots.txt', 'apple-touch-icon.png'],
-      manifest: {
-        name: 'TrainingPlan',
-        short_name: 'TrainingPlan',
-        description: 'Self-hosted triathlon training management platform',
-        theme_color: '#1976d2',
-        icons: [
-          {
-            src: 'pwa-192x192.png',
-            sizes: '192x192',
-            type: 'image/png',
-          },
-          {
-            src: 'pwa-512x512.png',
-            sizes: '512x512',
-            type: 'image/png',
-          },
-        ],
-      },
-    }),
   ],
   server: {
     host: true,

@@ -81,6 +81,9 @@ interface IcuStatus {
 }
 
 interface UserThresholds {
+  // Athlete
+  weight_kg: number | null;
+
   // Cycling
   ftp: number | null;
   cycling_threshold_hr: number | null;
@@ -128,6 +131,7 @@ const SettingsNew: React.FC = () => {
   const [icuStatus, setIcuStatus] = useState<IcuStatus | null>(null);
   const [menuAnchor, setMenuAnchor] = useState<null | HTMLElement>(null);
   const [thresholds, setThresholds] = useState<UserThresholds>({
+    weight_kg: null,
     ftp: null,
     cycling_threshold_hr: null,
     threshold_pace: null,
@@ -227,6 +231,12 @@ const SettingsNew: React.FC = () => {
     return isNaN(parsed) ? null : parsed;
   };
 
+  const parseFloatInput = (value: string): number | null => {
+    if (!value || value.trim() === '') return null;
+    const parsed = parseFloat(value);
+    return isNaN(parsed) ? null : parsed;
+  };
+
   useEffect(() => {
     document.title = 'Settings - Kinesis';
     fetchSettings();
@@ -266,6 +276,7 @@ const SettingsNew: React.FC = () => {
       const userData = thresholdsResponse.data;
       
       setThresholds({
+        weight_kg: userData.weight_kg ?? null,
         ftp: userData.ftp,
         cycling_threshold_hr: userData.cycling_threshold_hr,
         threshold_pace: userData.threshold_pace,
@@ -637,10 +648,11 @@ const SettingsNew: React.FC = () => {
         { days_ahead: icuDaysAhead },
         { timeout: 120000 },
       );
-      const { synced, total, plan_name, message } = response.data;
+      const { synced, deleted, total, plan_name, message } = response.data;
       setSuccess(
         message ||
-          `Pushed ${synced ?? 0}/${total ?? 0} workouts to Intervals.icu` +
+          `Synced ${synced ?? 0}/${total ?? 0} to Intervals.icu` +
+            (deleted ? `, removed ${deleted}` : '') +
             (plan_name ? ` (${plan_name})` : '')
       );
       await fetchSettings();
@@ -916,7 +928,25 @@ const SettingsNew: React.FC = () => {
                       InputProps={{
                         endAdornment: <InputAdornment position="end">watts</InputAdornment>,
                       }}
-                      helperText="Your 20-minute power test × 0.95"
+                      helperText={
+                        thresholds.ftp && thresholds.weight_kg
+                          ? `≈ ${(thresholds.ftp / thresholds.weight_kg).toFixed(2)} W/kg`
+                          : 'Your 20-minute power test × 0.95'
+                      }
+                    />
+                  </Grid>
+                  <Grid item xs={12} sm={6}>
+                    <TextField
+                      fullWidth
+                      label="Body weight"
+                      type="number"
+                      inputProps={{ step: 0.1, min: 30, max: 200 }}
+                      value={thresholds.weight_kg ?? ''}
+                      onChange={(e) => setThresholds({ ...thresholds, weight_kg: parseFloatInput(e.target.value) })}
+                      InputProps={{
+                        endAdornment: <InputAdornment position="end">kg</InputAdornment>,
+                      }}
+                      helperText="Used for W/kg on bike session charts"
                     />
                   </Grid>
                   <Grid item xs={12} sm={6}>
@@ -1554,8 +1584,9 @@ const SettingsNew: React.FC = () => {
                         </Select>
                       </FormControl>
                       <Alert severity="info" sx={{ mt: 1 }}>
-                        Syncs from your <strong>active</strong> training plan only. Enable Garmin
-                        sync inside Intervals.icu to deliver workouts to your watch.
+                        Syncs from your <strong>active</strong> training plan only — pushes
+                        upcoming workouts and removes ones no longer on the Kinesis calendar.
+                        Enable Garmin sync inside Intervals.icu to deliver workouts to your watch.
                       </Alert>
                     </Box>
                   </>

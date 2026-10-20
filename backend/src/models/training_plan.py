@@ -2,7 +2,7 @@
 Training Plan Database Models
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Date, Enum
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Date, Enum, Float, Index
 from sqlalchemy.orm import relationship
 import enum
 
@@ -66,6 +66,9 @@ class TrainingPlan(Base):
 class Workout(Base):
     """Workout model"""
     __tablename__ = "workouts"
+    __table_args__ = (
+        Index("ix_workouts_training_plan_id", "training_plan_id"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     training_plan_id = Column(Integer, ForeignKey("training_plans.id"), nullable=False)
@@ -86,6 +89,13 @@ class Workout(Base):
     actual_duration_minutes = Column(Integer, nullable=True)
     actual_distance_km = Column(Integer, nullable=True)
     notes = Column(Text, nullable=True)
+
+    # Link to performed Garmin activity (auto or manual match)
+    matched_activity_id = Column(Integer, ForeignKey("garmin_activities.id"), nullable=True, index=True)
+    match_confidence = Column(Float, nullable=True)  # 0.0–1.0
+    # none | auto_high | needs_review | confirmed | manual
+    match_status = Column(String, nullable=True)
+    matched_at = Column(DateTime, nullable=True)
     
     # Garmin sync tracking
     garmin_workout_id = Column(String, nullable=True)  # Garmin's workout ID

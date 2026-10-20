@@ -82,25 +82,24 @@ def date_to_string(dt: Optional[Union[datetime, date, str]]) -> Optional[str]:
         return None
 
 
-def compare_date_for_sqlite(dt: Union[datetime, date, str]) -> str:
+def compare_date_for_sqlite(dt: Union[datetime, date, str]) -> datetime:
     """
-    Convert datetime/date to string format for SQLite comparison.
-    
-    For range queries in SQLite, we need to compare against TEXT fields.
-    This ensures consistent formatting for >= and < comparisons.
-    
-    Args:
-        dt: datetime, date, or string to compare
-        
-    Returns:
-        String in YYYY-MM-DD format for SQLite comparison
+    Normalize a date/datetime for SQLAlchemy DateTime column comparisons.
+
+    Returns a real datetime (not a date string). asyncpg/Postgres reject
+    `timestamp >= varchar` when a YYYY-MM-DD string is bound as a parameter;
+    SQLite DateTime columns still accept Python datetime via SQLAlchemy.
     """
     if isinstance(dt, datetime):
-        return dt.strftime("%Y-%m-%d")
-    elif isinstance(dt, date):
-        return dt.strftime("%Y-%m-%d")
-    elif isinstance(dt, str):
-        # Already a string, ensure it's in correct format
-        return dt[:10] if len(dt) >= 10 else dt
-    else:
-        return str(dt)
+        return dt
+    if isinstance(dt, date):
+        return datetime.combine(dt, datetime.min.time())
+    if isinstance(dt, str):
+        parsed = parse_sqlite_datetime(dt)
+        if parsed:
+            return parsed
+        try:
+            return datetime.strptime(dt[:10], "%Y-%m-%d")
+        except (ValueError, TypeError):
+            raise ValueError(f"Cannot parse compare date: {dt!r}") from None
+    raise TypeError(f"Unsupported compare date type: {type(dt)}")

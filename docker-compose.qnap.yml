@@ -1,27 +1,62 @@
 # QNAP Container Station compatibility overrides
-# Usage on NAS:
+# Prefer ./deploy-qnap-fast.sh (build linux/amd64 on the Mac, load images here).
+# On-NAS build still works:
 #   docker compose -f docker-compose.yml -f docker-compose.qnap.yml up -d --build
+#
+# Source bind-mounts from the base file are cleared so the image contents run.
+# Vite-dev on QNAP was unstable. Frontend is the static nginx image.
 
 services:
   backend:
+    image: kinesis-backend:nas
+    platform: linux/amd64
+    pull_policy: never
+    # Keep the base ./backend:/app mount so the NAS backend/.env stays in the container.
     # Container Station / older compose parsers may not support depends_on.condition
     depends_on:
       - postgres
       - redis
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
+      # Frontend has no refresh-token flow yet; 15m access tokens feel like random logouts.
+      ACCESS_TOKEN_EXPIRE_MINUTES: "10080"
     # Run backend in non-dev mode on NAS (no --reload)
-    command: uvicorn src.main:app --host 0.0.0.0 --port 8000
+    command: uvicorn src.main:app --host 0.0.0.0 --port 8000 --workers 1
 
   celery_worker:
+    image: kinesis-backend:nas
+    platform: linux/amd64
+    pull_policy: never
     depends_on:
       - postgres
       - redis
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
 
   celery_beat:
+    image: kinesis-backend:nas
+    platform: linux/amd64
+    pull_policy: never
     depends_on:
       - redis
+    environment:
+      ENVIRONMENT: production
+      DEBUG: "false"
 
   frontend:
-    # Remove hardcoded localhost API URL on NAS; frontend auto-detects browser host.
-    environment: {}
-    # Production build + preview (not Vite HMR/dev server)
-    command: sh -c "npm run build && npm run preview -- --host 0.0.0.0 --port 3000"
+    image: kinesis-frontend:nas
+    platform: linux/amd64
+    pull_policy: never
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.prod
+    # Force-disable any leftover auto-login env from local .env files
+    environment:
+      VITE_DEV_AUTO_LOGIN: "false"
+      VITE_DEV_EMAIL: ""
+      VITE_DEV_PASSWORD: ""
+    # Static nginx (see Dockerfile.prod). Bind mounts from base compose only
+    # affect /app and do not overwrite /usr/share/nginx/html.
+    command: ["nginx", "-g", "daemon off;"]

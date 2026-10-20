@@ -1,29 +1,36 @@
 """
-Initialize the database with tables
+Initialize the database with tables (current model schema).
+
+Used for fresh Postgres installs where Alembic history starts with ALTER
+migrations (no baseline create_table for core models).
 """
 import asyncio
 from sqlalchemy.ext.asyncio import create_async_engine
+
 from src.config import settings
 from src.database import Base
 
-# Import all models here so they are registered with Base
-from src.models.user import User
-from src.models.training_plan import TrainingPlan, Workout
+# Register all models on Base.metadata
+from src.models import (  # noqa: F401
+    User,
+    TrainingPlan,
+    Workout,
+    GarminActivity,
+    WeeklyThreshold,
+    GarminHRV,
+    Event,
+)
 
 
-async def init_db():
-    """Create all database tables."""
-    engine = create_async_engine(settings.database_url, echo=True)
-    
+async def init_db() -> None:
+    """Create all database tables from SQLAlchemy models."""
+    engine = create_async_engine(settings.database_url, echo=False)
+
     async with engine.begin() as conn:
-        # Drop all tables (use with caution!)
-        # await conn.run_sync(Base.metadata.drop_all)
-        
-        # Create all tables
         await conn.run_sync(Base.metadata.create_all)
-    
+
     await engine.dispose()
-    print("✅ Database initialized successfully!")
+    print("Database initialized successfully (create_all).")
 
 
 if __name__ == "__main__":

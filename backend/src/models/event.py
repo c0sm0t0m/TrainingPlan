@@ -38,6 +38,9 @@ class Event(Base):
     cost = Column(String, nullable=True)
     notes = Column(Text, nullable=True)
     
+    # The one outcome the season is built toward. One per user.
+    is_main_goal = Column(Integer, default=0)  # SQLite boolean
+
     # Completion tracking
     is_completed = Column(Integer, default=0)  # SQLite boolean
     actual_time = Column(String, nullable=True)  # Actual finish time

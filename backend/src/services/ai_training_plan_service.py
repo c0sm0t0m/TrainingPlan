@@ -27,6 +27,7 @@ from src.trainer_config.trainer_styles import (
     build_trainer_specific_prompt,
     get_detailed_workout_instructions
 )
+from src.services.plan_vs_actual import session_omits_distance
 from src.services.ai_plan_phases import (
     compute_plan_phases,
     get_phase,
@@ -198,6 +199,8 @@ async def import_training_plan(
         stored_distance = workout_data.distance_km
         if distance_km is not None:
             stored_distance = distance_km
+        if session_omits_distance(workout_data.sport_type, steps_json, workout_data.duration_minutes):
+            stored_distance = None
         workout = Workout(
             training_plan_id=training_plan.id,
             date=workout_data.date,
@@ -587,7 +590,6 @@ REQUIRED STRUCTURE (example pattern — expand to all workouts in scope):
         "durationMinutes": 90,
         "intensityZone": "zone2",
         "targetTSS": 55,
-        "distanceKm": 42.0,
         "structuredSteps": [
           {{
             "stepOrder": 1,
@@ -637,6 +639,7 @@ FIELD RULES
 - Plan required: name, description, startDate, endDate, sportType, targetEvent, workouts
 - Workout required: date, title, sportType, workoutType, durationMinutes, targetTSS, structuredSteps
 - Optional: description, distanceKm, intensityZone, notes
+- Cycling prescribed by time and power (%ftp or watts): omit distanceKm. Outdoor kilometres and speed depend on elevation, wind, and surface. Do not infer a target distance or km/h from watts. Run and swim may still use distanceKm.
 - sportType: running|cycling|swimming|strength|triathlon
 - workoutType: easy|tempo|interval|long|recovery|race|brick|strength
 - Numbers are JSON numbers (not strings); dates YYYY-MM-DD; no trailing commas

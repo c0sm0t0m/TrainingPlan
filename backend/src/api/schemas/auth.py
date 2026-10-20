@@ -27,6 +27,9 @@ class User(UserBase):
     id: int
     is_active: bool
     
+    # Athlete
+    weight_kg: Optional[float] = None
+
     # Training Thresholds
     ftp: Optional[int] = None
     cycling_threshold_hr: Optional[int] = None
@@ -43,6 +46,7 @@ class User(UserBase):
 
 class UserUpdate(BaseModel):
     """Schema for updating user thresholds."""
+    weight_kg: Optional[float] = None
     ftp: Optional[int] = None
     cycling_threshold_hr: Optional[int] = None
     threshold_pace: Optional[int] = None

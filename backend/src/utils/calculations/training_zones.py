@@ -33,28 +33,74 @@ def calculate_power_zones_coggan(ftp: int) -> List[Dict]:
 
 # Heart Rate Zones
 
+def _contiguous_hr_zones(boundaries: List[int], names: List[str], max_hr: int) -> List[Dict]:
+    """
+    Build contiguous HR zones from upper-bound percentages.
+
+    Independent int(threshold * pct) cutoffs leave 1–2 bpm gaps; activities
+    with avg HR in those gaps were silently dropped from zone distribution.
+    """
+    zones: List[Dict] = []
+    prev_max = -1
+    for i, (upper, name) in enumerate(zip(boundaries, names)):
+        # Last zone always extends to max_hr
+        zone_max = max_hr if i == len(boundaries) - 1 else min(upper, max_hr)
+        zone_min = 0 if i == 0 else prev_max + 1
+        if zone_min > zone_max:
+            zone_max = zone_min
+        zones.append({"zone": i + 1, "name": name, "min": zone_min, "max": zone_max})
+        prev_max = zone_max
+    return zones
+
+
 def calculate_hr_zones_friel(threshold_hr: int, max_hr: int) -> List[Dict]:
-    """Joe Friel 7-zone HR model."""
-    return [
-        {"zone": 1, "name": "Recovery", "min": 0, "max": int(threshold_hr * 0.82)},
-        {"zone": 2, "name": "Aerobic", "min": int(threshold_hr * 0.83), "max": int(threshold_hr * 0.89)},
-        {"zone": 3, "name": "Tempo", "min": int(threshold_hr * 0.90), "max": int(threshold_hr * 0.94)},
-        {"zone": 4, "name": "Sub-Threshold", "min": int(threshold_hr * 0.95), "max": int(threshold_hr * 0.99)},
-        {"zone": 5, "name": "Super-Threshold", "min": threshold_hr, "max": int(threshold_hr * 1.02)},
-        {"zone": 6, "name": "Aerobic Capacity", "min": int(threshold_hr * 1.03), "max": int(threshold_hr * 1.06)},
-        {"zone": 7, "name": "Anaerobic Capacity", "min": int(threshold_hr * 1.07), "max": max_hr}
+    """Joe Friel 7-zone HR model (contiguous boundaries)."""
+    boundaries = [
+        int(threshold_hr * 0.82),
+        int(threshold_hr * 0.89),
+        int(threshold_hr * 0.94),
+        int(threshold_hr * 0.99),
+        int(threshold_hr * 1.02),
+        int(threshold_hr * 1.06),
+        max_hr,
     ]
+    names = [
+        "Recovery",
+        "Aerobic",
+        "Tempo",
+        "Sub-Threshold",
+        "Super-Threshold",
+        "Aerobic Capacity",
+        "Anaerobic Capacity",
+    ]
+    return _contiguous_hr_zones(boundaries, names, max_hr)
 
 
 def calculate_hr_zones_coggan(threshold_hr: int, max_hr: int) -> List[Dict]:
-    """Coggan 5-zone HR model."""
-    return [
-        {"zone": 1, "name": "Active Recovery", "min": 0, "max": int(threshold_hr * 0.82)},
-        {"zone": 2, "name": "Endurance", "min": int(threshold_hr * 0.83), "max": int(threshold_hr * 0.89)},
-        {"zone": 3, "name": "Tempo", "min": int(threshold_hr * 0.90), "max": int(threshold_hr * 0.94)},
-        {"zone": 4, "name": "Lactate Threshold", "min": int(threshold_hr * 0.95), "max": int(threshold_hr * 1.05)},
-        {"zone": 5, "name": "VO2 Max", "min": int(threshold_hr * 1.06), "max": max_hr}
+    """Coggan 5-zone HR model (contiguous boundaries)."""
+    boundaries = [
+        int(threshold_hr * 0.82),
+        int(threshold_hr * 0.89),
+        int(threshold_hr * 0.94),
+        int(threshold_hr * 1.05),
+        max_hr,
     ]
+    names = [
+        "Active Recovery",
+        "Endurance",
+        "Tempo",
+        "Lactate Threshold",
+        "VO2 Max",
+    ]
+    return _contiguous_hr_zones(boundaries, names, max_hr)
+
+
+def classify_hr_to_zone(avg_hr: int, zones: List[Dict]) -> Optional[int]:
+    """Return zone number for avg_hr, or None if outside all zones."""
+    for zone in zones:
+        if zone["min"] <= avg_hr <= zone["max"]:
+            return zone["zone"]
+    return None
 
 
 # Running Pace Zones

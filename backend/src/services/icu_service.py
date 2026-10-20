@@ -92,5 +92,79 @@ class IcuService:
             return data["events"]
         return [data] if data else []
 
+    async def list_events(
+        self,
+        api_key: str,
+        oldest: str,
+        newest: str,
+        athlete_id: Optional[str] = None,
+        category: str = "WORKOUT",
+    ) -> List[Dict[str, Any]]:
+        """
+        List calendar events in a local-date range (inclusive).
+
+        Args:
+            oldest / newest: yyyy-MM-dd local dates
+            category: ICU category filter (default WORKOUT)
+        """
+        url = f"{self._athlete_path(athlete_id)}/events"
+        params: Dict[str, Any] = {"oldest": oldest, "newest": newest}
+        if category:
+            params["category"] = category
+
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.get(url, params=params, auth=self._auth(api_key))
+
+        if response.status_code in (401, 403):
+            raise ValueError("Intervals.icu rejected the request (auth). Check API key and scopes.")
+        if response.status_code >= 400:
+            raise ValueError(f"Intervals.icu list events failed ({response.status_code}): {response.text[:500]}")
+
+        data = response.json()
+        if isinstance(data, list):
+            return data
+        if isinstance(data, dict) and "events" in data:
+            return data["events"] or []
+        return []
+
+    async def delete_events_bulk(
+        self,
+        api_key: str,
+        events: List[Dict[str, Any]],
+        athlete_id: Optional[str] = None,
+    ) -> int:
+        """
+        Delete calendar events by id and/or external_id.
+
+        Body items: {"id": ...} and/or {"external_id": "..."}.
+        Missing events are ignored. Returns count actually deleted.
+        """
+        if not events:
+            return 0
+
+        url = f"{self._athlete_path(athlete_id)}/events/bulk-delete"
+        async with httpx.AsyncClient(timeout=self.timeout) as client:
+            response = await client.put(
+                url,
+                json=events,
+                auth=self._auth(api_key),
+                headers={"Content-Type": "application/json"},
+            )
+
+        if response.status_code in (401, 403):
+            raise ValueError("Intervals.icu rejected the request (auth). Check API key and scopes.")
+        if response.status_code >= 400:
+            raise ValueError(f"Intervals.icu bulk delete failed ({response.status_code}): {response.text[:500]}")
+
+        data = response.json()
+        if isinstance(data, int):
+            return data
+        if isinstance(data, dict):
+            deleted = data.get("deleted")
+            if isinstance(deleted, int):
+                return deleted
+            return int(deleted) if deleted is not None else 0
+        return 0
+
 
 icu_service = IcuService()

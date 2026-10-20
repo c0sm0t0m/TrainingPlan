@@ -1,5 +1,5 @@
 import { Card, CardContent, Box, Typography, Chip } from '@mui/material'
-import { CheckCircle, DirectionsRun, DirectionsBike, Pool, FitnessCenter } from '@mui/icons-material'
+import { CheckCircle, DirectionsRun, DirectionsBike, Pool, SportsTennis, FitnessCenter } from '@mui/icons-material'
 import { getSportColor, getTSSColor } from '../utils/sportColors'
 
 interface WorkoutCardProps {
@@ -11,6 +11,10 @@ interface WorkoutCardProps {
   tss?: number
   isCompleted?: boolean
   onClick?: () => void
+  draggable?: boolean
+  onDragStart?: (e: React.DragEvent) => void
+  onDragOver?: (e: React.DragEvent) => void
+  onDrop?: (e: React.DragEvent) => void
 }
 
 const SportIcon = ({ sport }: { sport: string }) => {
@@ -19,6 +23,7 @@ const SportIcon = ({ sport }: { sport: string }) => {
   if (normalizedSport.includes('run')) return <DirectionsRun />
   if (normalizedSport.includes('bike') || normalizedSport.includes('cycl')) return <DirectionsBike />
   if (normalizedSport.includes('swim')) return <Pool />
+  if (normalizedSport.includes('tennis')) return <SportsTennis />
   if (normalizedSport.includes('strength') || normalizedSport.includes('gym')) return <FitnessCenter />
   
   return <FitnessCenter />
@@ -33,18 +38,26 @@ export default function WorkoutCard({
   tss,
   isCompleted = false,
   onClick,
+  draggable = false,
+  onDragStart,
+  onDragOver,
+  onDrop,
 }: WorkoutCardProps) {
   const sportColor = getSportColor(sport)
   const tssColor = tss ? getTSSColor(tss) : null
 
   return (
     <Card
+      draggable={draggable}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       sx={{
         border: isCompleted ? '2px solid' : '2px dashed',
         borderColor: isCompleted ? sportColor.main : sportColor.main,
         bgcolor: isCompleted ? sportColor.light : 'background.paper',
         opacity: isCompleted ? 1 : 0.85,
-        cursor: onClick ? 'pointer' : 'default',
+        cursor: onClick ? (draggable ? 'grab' : 'pointer') : 'default',
         transition: 'all 0.2s',
         '&:hover': onClick
           ? {

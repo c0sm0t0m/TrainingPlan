@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useLayoutEffect, useState, useMemo } from 'react';
 import {
   Box,
   Button,
@@ -42,10 +42,12 @@ import {
   DirectionsRun as RunIcon,
   DirectionsBike as BikeIcon,
   Pool as SwimIcon,
+  SportsTennis as TennisIcon,
   FitnessCenter as StrengthIcon,
   Event as EventIcon,
   Add as AddIcon,
   LibraryBooks as LibraryIcon,
+  Delete as DeleteIcon,
 } from '@mui/icons-material';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { useAuthStore } from '../store/authStore';
@@ -82,6 +84,9 @@ interface Workout {
   actual_duration_minutes?: number;
   actual_distance_km?: number;
   notes?: string;
+  matched_activity_id?: number | null;
+  match_confidence?: number | null;
+  match_status?: string | null;
 }
 
 interface GarminActivity {
@@ -108,6 +113,13 @@ interface GarminActivity {
   training_load?: number; // Garmin's training load
   calculated_tss?: number; // Our calculated TSS
   intensity_factor?: number; // Intensity Factor (IF) - workout intensity relative to threshold
+  matched_workout_id?: number | null;
+  matched_workout_title?: string | null;
+  matched_workout_date?: string | null;
+  match_confidence?: number | null;
+  match_status?: string | null;
+  match_needs_review?: boolean;
+  off_plan_day?: boolean;
 }
 
 interface TrainingPlan {
@@ -116,6 +128,15 @@ interface TrainingPlan {
   sport_type: string;
   workouts: Workout[];
 }
+
+type CalendarSnapshot = {
+  plans: TrainingPlan[];
+  workouts: Workout[];
+  activities: GarminActivity[];
+};
+
+/** Survives leaving the calendar so the next open paints immediately. */
+let calendarSnapshot: CalendarSnapshot | null = null;
 
 const Calendar: React.FC = () => {
   const theme = useTheme();
@@ -152,15 +173,17 @@ const Calendar: React.FC = () => {
     return startOfWeek(today, { weekStartsOn: 1 });
   });
   const [weeksToShow] = useState(156); // Show 156 weeks (3 years) for scrolling 12+ months ahead
-  const [plans, setPlans] = useState<TrainingPlan[]>([]);
-  const [workouts, setWorkouts] = useState<Workout[]>([]);
-  const [activities, setActivities] = useState<GarminActivity[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [weekWindow, setWeekWindow] = useState({ start: 0, end: 0 });
+  const [plans, setPlans] = useState<TrainingPlan[]>(() => calendarSnapshot?.plans ?? []);
+  const [workouts, setWorkouts] = useState<Workout[]>(() => calendarSnapshot?.workouts ?? []);
+  const [activities, setActivities] = useState<GarminActivity[]>(() => calendarSnapshot?.activities ?? []);
+  const [loading, setLoading] = useState(() => calendarSnapshot == null);
   const [error, setError] = useState<string | null>(null);
   const [selectedWorkout, setSelectedWorkout] = useState<Workout | null>(null);
   const [selectedActivity, setSelectedActivity] = useState<GarminActivity | null>(null);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
   const calendarCardRef = React.useRef<HTMLDivElement>(null);
+  const prependAdjustRef = React.useRef<number | null>(null);
   const weekScrollRef = React.useRef<HTMLDivElement>(null);
   const weekGridScrollRefs = React.useRef<{ [key: number]: HTMLDivElement | null }>({});
   
@@ -185,6 +208,10 @@ const Calendar: React.FC = () => {
   
   // Default to week view focused on the current week
   const [calendarView, setCalendarView] = useState<'month' | 'week' | 'day'>('week');
+
+  // Monday=0 … Sunday=6, so the day under each week number matches today
+  const currentWeekdayOffset = new Date().getDay() === 0 ? 6 : new Date().getDay() - 1;
+  const dayUnderWeekNumber = (weekStart: Date) => addDays(weekStart, currentWeekdayOffset);
   
   // Swipe handlers for mobile - DISABLED for week view
   // Week view uses scroll snap instead, handled by scroll event listener
@@ -227,43 +254,86 @@ const Calendar: React.FC = () => {
   }, [weeksToShow]);
 
   useEffect(() => {
+    const idx = generateWeeks.findIndex((week) => week.getTime() === currentWeekStart.getTime());
+    if (idx < 0) return;
+    setWeekWindow((current) => {
+      let start = current.start;
+      let end = current.end;
+      if (end <= start) {
+        start = Math.max(0, idx - 8);
+        end = Math.min(generateWeeks.length, idx + 14);
+      } else {
+        if (idx - start < 6) start = Math.max(0, idx - 10);
+        if (end - idx < 8) end = Math.min(generateWeeks.length, idx + 14);
+      }
+      if (start === current.start && end === current.end) return current;
+      if (start < current.start && calendarCardRef.current) {
+        prependAdjustRef.current = calendarCardRef.current.scrollHeight;
+      }
+      return { start, end };
+    });
+  }, [currentWeekStart, generateWeeks]);
+
+  useLayoutEffect(() => {
+    const card = calendarCardRef.current;
+    const previousHeight = prependAdjustRef.current;
+    if (!card || previousHeight == null) return;
+    const delta = card.scrollHeight - previousHeight;
+    if (delta > 0) card.scrollTop += delta;
+    prependAdjustRef.current = null;
+  }, [weekWindow.start]);
+
+  useEffect(() => {
     document.title = 'Training Calendar - Kinesis';
   }, []);
 
-  // Scroll to center week when switching to week view OR when currentWeekStart changes
-  useEffect(() => {
-    if (isMobile && calendarView === 'week' && weekScrollRef.current) {
-      // Disable scroll event handling during programmatic scroll
-      (weekScrollRef.current as any).__isResetting = true;
-      
-      // Reset scroll to center immediately (no timeout to avoid flicker)
-      if (weekScrollRef.current.offsetWidth > 0) {
-        weekScrollRef.current.scrollLeft = weekScrollRef.current.offsetWidth;
+  // Center the current week in the 3-week strip. The carousel mounts only after
+  // loading finishes, so this must run then — not just when the week changes.
+  useLayoutEffect(() => {
+    if (loading || !isMobile || calendarView !== 'week') return;
+
+    let cancelled = false;
+    let frames = 0;
+
+    const centerWeek = () => {
+      const el = weekScrollRef.current;
+      if (cancelled || !el) return;
+      if (el.offsetWidth === 0 && frames < 8) {
+        frames += 1;
+        requestAnimationFrame(centerWeek);
+        return;
       }
-      
-      // Reset the current week grid scroll to beginning (Monday) after refs are updated
-      // Use longer timeout to ensure React has finished rendering and refs are updated
-      const scrollResetTimer = setTimeout(() => {
-        // Only reset the current week (weekOffset 0), not all weeks
-        const currentWeekGrid = weekGridScrollRefs.current[0];
-        if (currentWeekGrid && currentWeekGrid.scrollLeft !== 0) {
-          currentWeekGrid.scrollLeft = 0;
-        }
-      }, 200);
-      
-      // Re-enable scroll event handling after scroll completes
-      const timer = setTimeout(() => {
-        if (weekScrollRef.current) {
-          (weekScrollRef.current as any).__isResetting = false;
-        }
-      }, 300);
-      
-      return () => {
-        clearTimeout(timer);
-        clearTimeout(scrollResetTimer);
-      };
-    }
-  }, [calendarView, isMobile, currentWeekStart]);
+      (el as any).__isResetting = true;
+      el.scrollLeft = el.offsetWidth;
+    };
+    centerWeek();
+
+    // Keep today's weekday centered under the week number (card width 110, gap/padding 4)
+    const scrollResetTimer = setTimeout(() => {
+      const cardWidth = 110;
+      const stride = cardWidth + 4;
+      const cardLeft = 4 + currentWeekdayOffset * stride;
+      [-1, 0, 1].forEach((offset) => {
+        const grid = weekGridScrollRefs.current[offset];
+        if (!grid) return;
+        const maxScroll = Math.max(0, grid.scrollWidth - grid.clientWidth);
+        const target = cardLeft - (grid.clientWidth - cardWidth) / 2;
+        grid.scrollLeft = Math.max(0, Math.min(target, maxScroll));
+      });
+    }, 200);
+
+    const timer = setTimeout(() => {
+      if (weekScrollRef.current) {
+        (weekScrollRef.current as any).__isResetting = false;
+      }
+    }, 300);
+
+    return () => {
+      cancelled = true;
+      clearTimeout(timer);
+      clearTimeout(scrollResetTimer);
+    };
+  }, [loading, calendarView, isMobile, currentWeekStart, currentWeekdayOffset]);
 
   // Handle week scroll snap to update currentWeekStart when user swipes
   useEffect(() => {
@@ -345,33 +415,36 @@ const Calendar: React.FC = () => {
       scrollContainer.removeEventListener('scroll', handleWeekScroll);
       clearTimeout(scrollTimeout);
     };
-  }, [isMobile, calendarView, currentWeekStart]);
+  }, [loading, isMobile, calendarView, currentWeekStart]);
 
   useEffect(() => {
     if (!user) {
       navigate('/login');
       return;
     }
-    fetchData();
+    fetchData(calendarSnapshot != null);
   }, [user, navigate]); // Remove currentDate dependency - load all data once
 
-  // Scroll to week when calendar loads
-  // Only auto-scroll to today on first visit, not when returning from activity detail
-  useEffect(() => {
-    if (!loading && calendarCardRef.current) {
-      setTimeout(() => {
-        const weekElement = document.getElementById(`week-${currentWeekStart.getTime()}`);
-        const cardElement = calendarCardRef.current;
-        if (weekElement && cardElement) {
-          const weekTop = weekElement.offsetTop;
-          // Use smooth scroll only if we restored from navigation (coming back from activity)
-          // Use auto scroll if first visit to calendar
-          const scrollBehavior = restoredFromNavigation.current ? 'smooth' : 'auto';
-          cardElement.scrollTo({ top: weekTop - 180, behavior: scrollBehavior });
-        }
-      }, 100);
-    }
-  }, [loading]); // Only run when loading completes, not when currentWeekStart changes
+  // Place a week row just under the sticky weekday header inside the desktop scroller.
+  const scrollDesktopWeekIntoView = (weekDate: Date, behavior: ScrollBehavior = 'auto') => {
+    const card = calendarCardRef.current;
+    const weekElement = document.getElementById(`week-${weekDate.getTime()}`);
+    if (!card || !weekElement) return;
+    const sticky = card.querySelector<HTMLElement>('[data-calendar-day-header]');
+    const stickyHeight = sticky?.getBoundingClientRect().height ?? 0;
+    const delta = weekElement.getBoundingClientRect().top - card.getBoundingClientRect().top - stickyHeight;
+    card.scrollTo({ top: Math.max(0, card.scrollTop + delta), behavior });
+  };
+
+  // Scroll to the current week once the desktop grid is mounted. Depends only on
+  // loading so later week changes (from scrolling) do not fight the user.
+  useLayoutEffect(() => {
+    if (loading || isMobile) return;
+    scrollDesktopWeekIntoView(
+      currentWeekStart,
+      restoredFromNavigation.current ? 'smooth' : 'auto',
+    );
+  }, [loading, isMobile]);
 
   // Update month display when scrolling (but not immediately after navigation)
   useEffect(() => {
@@ -391,26 +464,23 @@ const Calendar: React.FC = () => {
       // Debounce scroll handler for better performance
       clearTimeout(scrollTimeout);
       scrollTimeout = setTimeout(() => {
-        const scrollTop = cardElement.scrollTop;
-        
-        // Find the first visible week
+        const sticky = cardElement.querySelector<HTMLElement>('[data-calendar-day-header]');
+        const probe = sticky
+          ? sticky.getBoundingClientRect().bottom + 8
+          : cardElement.getBoundingClientRect().top + 8;
+
+        // First week that still extends below the sticky day header
         for (const weekStart of generateWeeks) {
           const weekElement = document.getElementById(`week-${weekStart.getTime()}`);
-          if (weekElement) {
-            const weekTop = weekElement.offsetTop;
-            const weekHeight = weekElement.offsetHeight;
-            
-            // Check if this week is in the visible area (with same offset as scroll navigation)
-            if (weekTop + weekHeight > scrollTop + 180) {
-              // Update month display if it changed
-              if (currentWeekStart.getTime() !== weekStart.getTime()) {
-                setCurrentWeekStart(weekStart);
-              }
-              break;
+          if (!weekElement) continue;
+          if (weekElement.getBoundingClientRect().bottom > probe) {
+            if (currentWeekStart.getTime() !== weekStart.getTime()) {
+              setCurrentWeekStart(weekStart);
             }
+            break;
           }
         }
-      }, 100); // Debounce by 100ms
+      }, 100);
     };
 
     cardElement.addEventListener('scroll', handleScroll);
@@ -419,65 +489,72 @@ const Calendar: React.FC = () => {
       clearTimeout(enableScrollUpdate);
       clearTimeout(scrollTimeout);
     };
-  }, [currentWeekStart, generateWeeks]);
+  }, [loading, currentWeekStart, generateWeeks]);
 
-  const fetchData = async () => {
-    try {
+  const fetchData = async (background = false) => {
+    if (!background) {
       setLoading(true);
       setError(null);
+    }
 
-      // Load Garmin activities independently so a plan schema error can't blank the calendar
-      const today = new Date();
-      const twelveMonthsAgo = new Date(today);
-      twelveMonthsAgo.setMonth(today.getMonth() - 12);
-      const startDate = twelveMonthsAgo.toISOString().split('T')[0];
-      const endDate = today.toISOString().split('T')[0];
+    const today = new Date();
+    const twelveMonthsAgo = new Date(today);
+    twelveMonthsAgo.setMonth(today.getMonth() - 12);
+    const startDate = twelveMonthsAgo.toISOString().split('T')[0];
+    const endDate = today.toISOString().split('T')[0];
 
-      const activitiesPromise = api
+    const [activitiesResult, plansResult] = await Promise.all([
+      api
         .get('/garmin/activities/by-date-range', {
           params: { start_date: startDate, end_date: endDate },
+          timeout: 60000,
         })
-        .then((activitiesResponse) => {
-          const data = activitiesResponse.data;
-          setActivities(Array.isArray(data) ? data : []);
-        })
+        .then((activitiesResponse) => (Array.isArray(activitiesResponse.data) ? activitiesResponse.data : []))
         .catch((actErr: any) => {
           console.log('No Garmin activities loaded:', actErr.response?.data?.detail);
-          setActivities([]);
-        });
+          return null;
+        }),
+      api
+        .get('/training-plans/calendar-workouts')
+        .then((response) => response.data)
+        .catch((planErr: any) => {
+          console.error('Failed to load training plans:', planErr.response?.data?.detail || planErr);
+          if (!background) {
+            setPlans([]);
+            setWorkouts([]);
+            setError(planErr.response?.data?.detail || 'Failed to load training plans');
+          }
+          return null;
+        }),
+    ]);
 
-      try {
-        // Fetch planned workouts (only from active training plans)
-        const response = await api.get('/training-plans', {
-          params: { active_only: true },
-        });
-        const allPlans = Array.isArray(response.data) ? response.data : [];
-
-        const plansWithWorkouts = await Promise.all(
-          allPlans.map(async (plan: any) => {
-            const detailResponse = await api.get(`/training-plans/${plan.id}`);
-            return detailResponse.data;
-          })
-        );
-
-        setPlans(plansWithWorkouts);
-        const allWorkouts = plansWithWorkouts.flatMap(
-          (plan: TrainingPlan) => plan.workouts || []
-        );
-        setWorkouts(allWorkouts);
-      } catch (planErr: any) {
-        console.error('Failed to load training plans:', planErr.response?.data?.detail || planErr);
-        setPlans([]);
-        setWorkouts([]);
-        setError(planErr.response?.data?.detail || 'Failed to load training plans');
-      }
-
-      await activitiesPromise;
-    } catch (err: any) {
-      setError(err.response?.data?.detail || 'Failed to load calendar data');
-    } finally {
-      setLoading(false);
+    const nextActivities = Array.isArray(activitiesResult)
+      ? activitiesResult
+      : (calendarSnapshot?.activities ?? []);
+    if (Array.isArray(activitiesResult) || !background) {
+      setActivities(nextActivities);
     }
+
+    const nextPlans = Array.isArray(plansResult?.plans)
+      ? plansResult.plans
+      : (calendarSnapshot?.plans ?? []);
+    const nextWorkouts = Array.isArray(plansResult?.workouts)
+      ? plansResult.workouts
+      : (calendarSnapshot?.workouts ?? []);
+    if (plansResult) {
+      setPlans(nextPlans);
+      setWorkouts(nextWorkouts);
+    }
+
+    if (Array.isArray(activitiesResult) || plansResult) {
+      calendarSnapshot = {
+        plans: nextPlans,
+        workouts: nextWorkouts,
+        activities: nextActivities,
+      };
+    }
+
+    if (!background) setLoading(false);
   };
 
   const getDaysInMonth = (date: Date) => {
@@ -491,21 +568,50 @@ const Calendar: React.FC = () => {
     return { daysInMonth, startDayOfWeek };
   };
 
+  const toDateKey = (value?: string | null) => (value ? value.slice(0, 10) : '');
+
+  const localDateKey = (date: Date) =>
+    `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+
+  const formatPlanDay = (iso?: string | null) => {
+    const key = toDateKey(iso);
+    if (!key) return '';
+    const [year, month, day] = key.split('-').map(Number);
+    return format(new Date(year, month - 1, day), 'EEE d MMM');
+  };
+
+  const workoutsByDate = useMemo(() => {
+    const map = new Map<string, Workout[]>();
+    workouts.forEach((workout) => {
+      const key = toDateKey(workout.date);
+      if (!key) return;
+      const list = map.get(key);
+      if (list) list.push(workout);
+      else map.set(key, [workout]);
+    });
+    return map;
+  }, [workouts]);
+
+  const activitiesByDate = useMemo(() => {
+    const map = new Map<string, GarminActivity[]>();
+    activities.forEach((activity) => {
+      const key = toDateKey(activity.date);
+      if (!key) return;
+      const list = map.get(key);
+      if (list) list.push(activity);
+      else map.set(key, [activity]);
+    });
+    return map;
+  }, [activities]);
+
   const getWorkoutsForDate = (date: Date) => {
-    // Format date as YYYY-MM-DD without timezone conversion
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const dateStr = `${year}-${month}-${day}`;
-    return workouts.filter((w) => w.date === dateStr);
+    const dateStr = localDateKey(date);
+    // Linked sessions stay on the day they were performed, not the planned day.
+    return (workoutsByDate.get(dateStr) || []).filter((w) => !w.matched_activity_id);
   };
 
   const getActivitiesForDate = (date: Date) => {
-    const year = date.getFullYear();
-    const month = String(date.getMonth() + 1).padStart(2, '0');
-    const day = String(date.getDate()).padStart(2, '0');
-    const dateStr = `${year}-${month}-${day}`;
-    return activities.filter((a) => a.date === dateStr);
+    return activitiesByDate.get(localDateKey(date)) || [];
   };
 
   // Calculate 7-day IF data for a week (for sparkline)
@@ -517,8 +623,8 @@ const Calendar: React.FC = () => {
       day.setDate(weekStart.getDate() + i);
       const dateStr = format(day, 'yyyy-MM-dd');
       
-      const dayActivities = activities
-        .filter(a => a.date === dateStr && a.intensity_factor != null);
+      const dayActivities = (activitiesByDate.get(dateStr) || [])
+        .filter(a => a.intensity_factor != null);
       
       if (dayActivities.length > 0) {
         if (dayActivities.length === 1) {
@@ -554,7 +660,7 @@ const Calendar: React.FC = () => {
       day.setDate(weekStart.getDate() + i);
       const dateStr = format(day, 'yyyy-MM-dd');
       
-      const dayActivities = activities.filter(a => a.date === dateStr);
+      const dayActivities = activitiesByDate.get(dateStr) || [];
       
       if (dayActivities.length > 0) {
         const totalTSS = dayActivities.reduce((sum, a) => sum + (a.calculated_tss || a.training_load || 0), 0);
@@ -570,6 +676,8 @@ const Calendar: React.FC = () => {
   // Calculate weekly summary stats
   const getWeeklySummary = (weekStart: Date) => {
     let totalTSS = 0;
+    let achievedTSS = 0;
+    let plannedTSS = 0;
     let totalMinutes = 0;
     let totalDistance = 0;
     let workoutCount = 0;
@@ -589,6 +697,12 @@ const Calendar: React.FC = () => {
       date.setDate(weekStart.getDate() + i);
       const dayActivities = getActivitiesForDate(date);
       const dayWorkouts = getWorkoutsForDate(date);
+      const dateKey = localDateKey(date);
+      // Planned load includes sessions already matched to an activity.
+      // Those are hidden on the day cell, but they were still the plan.
+      (workoutsByDate.get(dateKey) || []).forEach((w) => {
+        if (w.target_tss) plannedTSS += w.target_tss;
+      });
 
       // Count completed activities (actual workouts from Garmin)
       dayActivities.forEach(a => {
@@ -600,20 +714,19 @@ const Calendar: React.FC = () => {
         const distance = a.distance_meters ? a.distance_meters / 1000 : 0;
         
         totalTSS += tss;
+        achievedTSS += tss;
         totalMinutes += minutes;
         totalDistance += distance;
         workoutCount++;
         
         // Track sport-specific distances
         const sportType = a.activity_type.toLowerCase();
-        console.log(`Activity: ${a.activity_name} | Type: "${a.activity_type}" | Lowercase: "${sportType}" | Distance: ${distance}km`);
         if (sportType.includes('run')) {
           runDistance += distance;
           runMinutes += minutes;
         } else if (sportType.includes('cycl') || sportType.includes('bike') || sportType.includes('virtual')) {
           bikeDistance += distance;
           bikeMinutes += minutes;
-          console.log(`  ✅ Added to bike: ${distance}km | Total bike: ${bikeDistance}km`);
         } else if (sportType.includes('swim')) {
           swimDistance += distance;
           swimMinutes += minutes;
@@ -655,6 +768,8 @@ const Calendar: React.FC = () => {
 
     const summary = {
       totalTSS: Math.round(totalTSS),
+      achievedTSS: Math.round(achievedTSS),
+      plannedTSS: Math.round(plannedTSS),
       totalHours: Math.floor(totalMinutes / 60),
       totalMinutes: totalMinutes % 60,
       totalDistance: totalDistance.toFixed(1),
@@ -683,14 +798,7 @@ const Calendar: React.FC = () => {
     setCurrentWeekStart(monday);
     
     // Scroll to today's week within the card container
-    setTimeout(() => {
-      const weekElement = document.getElementById(`week-${monday.getTime()}`);
-      const cardElement = calendarCardRef.current;
-      if (weekElement && cardElement) {
-        const weekTop = weekElement.offsetTop;
-        cardElement.scrollTo({ top: weekTop - 180, behavior: 'smooth' });
-      }
-    }, 100);
+    setTimeout(() => scrollDesktopWeekIntoView(monday, 'smooth'), 50);
   };
   
   // Mobile navigation
@@ -756,7 +864,7 @@ const Calendar: React.FC = () => {
       const dateStr = format(day, 'yyyy-MM-dd');
       
       // Collect all activities for this day
-      const dayActivities = activities.filter(a => a.date === dateStr);
+      const dayActivities = activitiesByDate.get(dateStr) || [];
       const dayActivitiesWithIF = dayActivities.filter(a => a.intensity_factor != null);
       
       // Calculate TSS (for bar height)
@@ -788,7 +896,8 @@ const Calendar: React.FC = () => {
     }
     
     return {
-      totalTSS: summary.totalTSS,
+      totalTSS: summary.achievedTSS,
+      plannedTSS: summary.plannedTSS,
       totalHours: summary.totalHours + summary.totalMinutes / 60,
       totalDistance: parseFloat(summary.totalDistance),
       last7DaysIF,
@@ -796,12 +905,13 @@ const Calendar: React.FC = () => {
     };
   }, [currentWeekStart, workouts, activities]);
 
-  const getSportIcon = (sportType: string) => {
+  const getSportIcon = (sportType: string, size = 12) => {
     const type = sportType.toLowerCase();
-    if (type.includes('run')) return <RunIcon sx={{ fontSize: 12 }} />;
-    if (type.includes('bike') || type.includes('cycling')) return <BikeIcon sx={{ fontSize: 12 }} />;
-    if (type.includes('swim')) return <SwimIcon sx={{ fontSize: 12 }} />;
-    if (type.includes('strength') || type.includes('gym')) return <StrengthIcon sx={{ fontSize: 12 }} />;
+    if (type.includes('run')) return <RunIcon sx={{ fontSize: size }} />;
+    if (type.includes('bike') || type.includes('cycling')) return <BikeIcon sx={{ fontSize: size }} />;
+    if (type.includes('swim')) return <SwimIcon sx={{ fontSize: size }} />;
+    if (type.includes('tennis')) return <TennisIcon sx={{ fontSize: size }} />;
+    if (type.includes('strength') || type.includes('gym')) return <StrengthIcon sx={{ fontSize: size }} />;
     return null;
   };
 
@@ -823,15 +933,81 @@ const Calendar: React.FC = () => {
     });
   };
 
+  const handleLinkWorkoutToActivity = async (workoutId: number, activityId: number) => {
+    try {
+      await api.post(`/activities/${activityId}/link-workout`, { workout_id: workoutId });
+      await fetchData(true);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to link workout to activity');
+    }
+  };
+
+  const onWorkoutDragStart = (e: React.DragEvent, workout: Workout) => {
+    e.dataTransfer.setData('application/x-kinesis-workout', String(workout.id));
+    e.dataTransfer.setData('text/plain', `workout:${workout.id}`);
+    e.dataTransfer.effectAllowed = 'link';
+  };
+
+  const onActivityDragStart = (e: React.DragEvent, activity: GarminActivity) => {
+    e.dataTransfer.setData('application/x-kinesis-activity', String(activity.id));
+    e.dataTransfer.setData('text/plain', `activity:${activity.id}`);
+    e.dataTransfer.effectAllowed = 'link';
+  };
+
+  const onAllowDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'link';
+  };
+
+  const onDropOntoActivity = async (e: React.DragEvent, activity: GarminActivity) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const workoutId =
+      e.dataTransfer.getData('application/x-kinesis-workout') ||
+      (e.dataTransfer.getData('text/plain').startsWith('workout:')
+        ? e.dataTransfer.getData('text/plain').slice('workout:'.length)
+        : '');
+    if (workoutId) {
+      await handleLinkWorkoutToActivity(Number(workoutId), activity.id);
+    }
+  };
+
+  const onDropOntoWorkout = async (e: React.DragEvent, workout: Workout) => {
+    e.preventDefault();
+    e.stopPropagation();
+    const activityId =
+      e.dataTransfer.getData('application/x-kinesis-activity') ||
+      (e.dataTransfer.getData('text/plain').startsWith('activity:')
+        ? e.dataTransfer.getData('text/plain').slice('activity:'.length)
+        : '');
+    if (activityId) {
+      await handleLinkWorkoutToActivity(workout.id, Number(activityId));
+    }
+  };
+
   const handleToggleComplete = async (workout: Workout) => {
     try {
       await api.put(`/training-plans/${workout.training_plan_id}/workouts/${workout.id}`, {
         is_completed: !workout.is_completed,
       });
-      fetchData();
+      fetchData(true);
       setDetailDialogOpen(false);
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to update workout');
+    }
+  };
+
+  const handleDeleteWorkout = async (workout: Workout) => {
+    if (!confirm('Are you sure you want to remove this workout from the calendar?')) {
+      return;
+    }
+    try {
+      await api.delete(`/training-plans/${workout.training_plan_id}/workouts/${workout.id}`);
+      setDetailDialogOpen(false);
+      setSelectedWorkout(null);
+      fetchData(true);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to remove workout');
     }
   };
 
@@ -876,7 +1052,7 @@ const Calendar: React.FC = () => {
       });
       
       setQuickAddOpen(false);
-      await fetchData(); // Refresh calendar
+      await fetchData(true); // Refresh calendar
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to create workout');
     } finally {
@@ -925,7 +1101,7 @@ const Calendar: React.FC = () => {
             ? 'Added & synced to Intervals.icu'
             : 'Added to calendar')
       );
-      await fetchData();
+      await fetchData(true);
       if (result.icu_synced) {
         setTimeout(() => setLibraryOpen(false), 1200);
       }
@@ -950,7 +1126,14 @@ const Calendar: React.FC = () => {
   };
 
   const dayNames = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const weeks = generateWeeks; // Use memoized array directly
+  const currentWeekIndex = generateWeeks.findIndex((week) => week.getTime() === currentWeekStart.getTime());
+  const visibleStart = weekWindow.end <= weekWindow.start && currentWeekIndex >= 0
+    ? Math.max(0, currentWeekIndex - 8)
+    : weekWindow.start;
+  const visibleEnd = weekWindow.end <= weekWindow.start && currentWeekIndex >= 0
+    ? Math.min(generateWeeks.length, currentWeekIndex + 14)
+    : weekWindow.end;
+  const weeks = generateWeeks.slice(visibleStart, visibleEnd);
 
   if (!user) {
     return null;
@@ -1003,14 +1186,7 @@ const Calendar: React.FC = () => {
     setCurrentWeekStart(newDate);
     
     // Scroll to that week within the card container
-    setTimeout(() => {
-      const weekElement = document.getElementById(`week-${newDate.getTime()}`);
-      const cardElement = calendarCardRef.current;
-      if (weekElement && cardElement) {
-        const weekTop = weekElement.offsetTop;
-        cardElement.scrollTo({ top: weekTop - 180, behavior: 'smooth' });
-      }
-    }, 50);
+    setTimeout(() => scrollDesktopWeekIntoView(newDate, 'smooth'), 50);
   };
 
   const handleNextMonth = () => {
@@ -1026,14 +1202,7 @@ const Calendar: React.FC = () => {
     setCurrentWeekStart(newDate);
     
     // Scroll to that week within the card container
-    setTimeout(() => {
-      const weekElement = document.getElementById(`week-${newDate.getTime()}`);
-      const cardElement = calendarCardRef.current;
-      if (weekElement && cardElement) {
-        const weekTop = weekElement.offsetTop;
-        cardElement.scrollTo({ top: weekTop - 180, behavior: 'smooth' });
-      }
-    }, 50);
+    setTimeout(() => scrollDesktopWeekIntoView(newDate, 'smooth'), 50);
   };
 
   // Mobile view (< 768px)
@@ -1139,7 +1308,7 @@ const Calendar: React.FC = () => {
                         mt: 0.25,
                       }}
                     >
-                      {format(week, 'MMM d')}
+                      {format(dayUnderWeekNumber(week), 'EEE d')}
                     </Typography>
                   </Box>
                 );
@@ -1205,7 +1374,7 @@ const Calendar: React.FC = () => {
                         mt: 0.5,
                       }}
                     >
-                      {format(currentWeekStart, 'MMM d')}
+                      {format(dayUnderWeekNumber(currentWeekStart), 'EEE d')}
                     </Typography>
                     {weekTSS > 0 && (
                       <Box 
@@ -1271,7 +1440,7 @@ const Calendar: React.FC = () => {
                         mt: 0.25,
                       }}
                     >
-                      {format(week, 'MMM d')}
+                      {format(dayUnderWeekNumber(week), 'EEE d')}
                     </Typography>
                   </Box>
                 );
@@ -1309,10 +1478,7 @@ const Calendar: React.FC = () => {
                 {(() => {
                   const dayWorkouts = getWorkoutsForDate(currentWeekStart);
                   const dayActivities = getActivitiesForDate(currentWeekStart);
-                  const dayTSS = [
-                    ...dayWorkouts.filter(w => w.is_completed).map(w => w.tss || 0),
-                    ...dayActivities.map(a => a.calculated_tss || 0)
-                  ].reduce((sum, tss) => sum + tss, 0);
+                  const dayTSS = dayActivities.reduce((sum, a) => sum + (a.calculated_tss || 0), 0);
 
                   return (
                     <Box sx={{ mb: 3 }}>
@@ -1344,6 +1510,10 @@ const Calendar: React.FC = () => {
                         tss={workout.target_tss}
                         isCompleted={workout.is_completed}
                         onClick={() => handleWorkoutClick(workout)}
+                        draggable
+                        onDragStart={(e) => onWorkoutDragStart(e, workout)}
+                        onDragOver={onAllowDrop}
+                        onDrop={(e) => onDropOntoWorkout(e, workout)}
                       />
                     ))}
                   </Box>
@@ -1354,20 +1524,49 @@ const Calendar: React.FC = () => {
                   <Box sx={{ mb: 3 }}>
                     <Typography variant="subtitle2" sx={{ mb: 1, color: 'text.secondary' }}>
                       Completed Activities
+                      <Typography component="span" variant="caption" color="text.secondary" sx={{ ml: 1 }}>
+                        (drag a plan onto an activity to link)
+                      </Typography>
                     </Typography>
                     {getActivitiesForDate(currentWeekStart).map((activity) => (
                       <Card
                         key={activity.id}
+                        draggable
+                        onDragStart={(e) => onActivityDragStart(e, activity)}
+                        onDragOver={onAllowDrop}
+                        onDrop={(e) => onDropOntoActivity(e, activity)}
                         onClick={() => handleActivityClick(activity)}
-                        sx={{ mb: 1, cursor: 'pointer', '&:hover': { boxShadow: 3 } }}
+                        sx={{
+                          mb: 1,
+                          cursor: 'grab',
+                          border: activity.match_needs_review ? 2 : 0,
+                          borderColor: activity.match_needs_review ? 'warning.main' : undefined,
+                          '&:hover': { boxShadow: 3 },
+                        }}
                       >
                         <CardContent>
-                          <Typography variant="subtitle1" sx={{ fontWeight: 600 }}>
-                            {activity.activity_name}
-                          </Typography>
+                          <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, flexWrap: 'wrap' }}>
+                            <Typography variant="subtitle1" sx={{ fontWeight: 600, flexGrow: 1 }}>
+                              {activity.activity_name}
+                            </Typography>
+                            {activity.match_needs_review && (
+                              <Chip label="Review match" size="small" color="warning" />
+                            )}
+                            {activity.matched_workout_id && !activity.match_needs_review && (
+                              <Chip label="Linked" size="small" color="success" variant="outlined" />
+                            )}
+                          </Box>
                           <Typography variant="body2" color="text.secondary">
                             {activity.activity_type} • {Math.round(activity.duration_seconds / 60)} min
+                            {activity.matched_workout_title
+                              ? ` · ${activity.matched_workout_title}`
+                              : ''}
                           </Typography>
+                          {activity.off_plan_day && activity.matched_workout_date && (
+                            <Typography variant="caption" color="warning.main">
+                              Planned {formatPlanDay(activity.matched_workout_date)}
+                            </Typography>
+                          )}
                         </CardContent>
                       </Card>
                     ))}
@@ -1449,6 +1648,7 @@ const Calendar: React.FC = () => {
             <Box sx={{ px: 2, pt: 2, pb: 2, borderTop: 1, borderColor: 'divider', bgcolor: 'background.paper' }}>
               <WeeklySummaryBar
                 totalTSS={weekSummary.totalTSS}
+                plannedTSS={weekSummary.plannedTSS}
                 totalHours={weekSummary.totalHours}
                 totalDistance={weekSummary.totalDistance}
                 last7DaysIF={weekSummary.last7DaysIF}
@@ -1630,6 +1830,121 @@ const Calendar: React.FC = () => {
             </Button>
           </DialogActions>
         </Dialog>
+
+        {/* Planned workout detail — mobile has no desktop dialog */}
+        <SwipeableDrawer
+          anchor="bottom"
+          open={detailDialogOpen && !!selectedWorkout}
+          onClose={() => {
+            setDetailDialogOpen(false);
+            setSelectedWorkout(null);
+          }}
+          onOpen={() => {}}
+          PaperProps={{
+            sx: { borderTopLeftRadius: 16, borderTopRightRadius: 16 },
+          }}
+        >
+          {selectedWorkout && (
+            <Box sx={{ px: 2.5, pt: 1.5, pb: 3 }}>
+              <Box
+                sx={{
+                  width: 40,
+                  height: 4,
+                  bgcolor: 'divider',
+                  borderRadius: 2,
+                  mx: 'auto',
+                  mb: 2,
+                }}
+              />
+              <Box sx={{ display: 'flex', alignItems: 'center', gap: 1, mb: 0.5 }}>
+                {getSportIcon(selectedWorkout.sport_type, 22)}
+                <Typography variant="h6" sx={{ fontWeight: 600, flex: 1 }}>
+                  {selectedWorkout.title}
+                </Typography>
+                {selectedWorkout.is_completed && <CheckCircleIcon color="success" />}
+              </Box>
+              <Typography variant="caption" color="text.secondary">
+                Planned workout
+              </Typography>
+
+              <Box sx={{ display: 'flex', flexWrap: 'wrap', gap: 1, mt: 2, mb: 2 }}>
+                <Chip size="small" label={selectedWorkout.sport_type} color="primary" />
+                <Chip size="small" label={selectedWorkout.workout_type} />
+                <Chip
+                  size="small"
+                  variant="outlined"
+                  label={new Date(selectedWorkout.date).toLocaleDateString()}
+                />
+              </Box>
+
+              {selectedWorkout.description && (
+                <Typography variant="body2" sx={{ mb: 2 }}>
+                  {selectedWorkout.description}
+                </Typography>
+              )}
+
+              <Box
+                sx={{
+                  display: 'grid',
+                  gridTemplateColumns: 'repeat(2, 1fr)',
+                  gap: 1.5,
+                  mb: 2.5,
+                }}
+              >
+                <Box>
+                  <Typography variant="caption" color="text.secondary">Duration</Typography>
+                  <Typography variant="body1">
+                    {selectedWorkout.duration_minutes ? `${selectedWorkout.duration_minutes} min` : '—'}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">Distance</Typography>
+                  <Typography variant="body1">
+                    {selectedWorkout.distance_km ? `${selectedWorkout.distance_km} km` : '—'}
+                  </Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">Intensity</Typography>
+                  <Typography variant="body1">{selectedWorkout.intensity_zone || '—'}</Typography>
+                </Box>
+                <Box>
+                  <Typography variant="caption" color="text.secondary">Target TSS</Typography>
+                  <Typography
+                    variant="body1"
+                    sx={{
+                      fontWeight: 600,
+                      color: selectedWorkout.target_tss
+                        ? getTSSColor(selectedWorkout.target_tss)
+                        : 'text.disabled',
+                    }}
+                  >
+                    {selectedWorkout.target_tss ?? '—'}
+                  </Typography>
+                </Box>
+              </Box>
+
+              <Stack spacing={1.5}>
+                <Button
+                  variant="contained"
+                  fullWidth
+                  onClick={() => handleToggleComplete(selectedWorkout)}
+                  color={selectedWorkout.is_completed ? 'secondary' : 'success'}
+                >
+                  {selectedWorkout.is_completed ? 'Mark incomplete' : 'Mark complete'}
+                </Button>
+                <Button
+                  variant="outlined"
+                  color="error"
+                  fullWidth
+                  startIcon={<DeleteIcon />}
+                  onClick={() => handleDeleteWorkout(selectedWorkout)}
+                >
+                  Remove
+                </Button>
+              </Stack>
+            </Box>
+          )}
+        </SwipeableDrawer>
       </Box>
     );
   }
@@ -1683,7 +1998,7 @@ const Calendar: React.FC = () => {
       <Card ref={calendarCardRef} sx={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'auto', mt: 0, mx: 0, borderRadius: 0 }}>
         <CardContent sx={{ p: 0, flex: 1, display: 'flex', flexDirection: 'column', '&:last-child': { pb: 0 } }}>
           {/* Header row with day names + Week Summary - Sticky within card */}
-          <Box sx={{ display: 'flex', borderBottom: 1, borderColor: 'divider', bgcolor: theme.palette.mode === 'dark' ? 'grey.900' : 'grey.100', position: 'sticky', top: 0, zIndex: 5, flexShrink: 0 }}>
+          <Box data-calendar-day-header sx={{ display: 'flex', borderBottom: 1, borderColor: 'divider', bgcolor: theme.palette.mode === 'dark' ? 'grey.900' : 'grey.100', position: 'sticky', top: 0, zIndex: 5, flexShrink: 0 }}>
             {dayNames.map((day, index) => (
               <Box 
                 key={day} 
@@ -1700,8 +2015,8 @@ const Calendar: React.FC = () => {
                 {day}
               </Box>
             ))}
-            <Box sx={{ width: '200px', textAlign: 'center', fontWeight: 'bold', py: 1, bgcolor: 'primary.main', color: 'primary.contrastText', fontSize: '0.875rem' }}>
-              Week Summary
+            <Box sx={{ flex: '0 0 168px', width: 168, textAlign: 'center', fontWeight: 'bold', py: 1, bgcolor: 'primary.main', color: 'primary.contrastText', fontSize: '0.8rem' }}>
+              Week
             </Box>
           </Box>
 
@@ -1733,10 +2048,10 @@ const Calendar: React.FC = () => {
                     date.setDate(weekStart.getDate() + dayOffset);
                     const dayWorkouts = getWorkoutsForDate(date);
                     const dayActivities = getActivitiesForDate(date);
-                    const dailyTSS = [
-                      ...dayWorkouts.map(w => w.target_tss || w.tss || 0),
-                      ...dayActivities.map(a => a.calculated_tss || a.training_load || 0)
-                    ].reduce((sum, tss) => sum + tss, 0);
+                    const performedTSS = dayActivities.reduce(
+                      (sum, a) => sum + (a.calculated_tss || 0),
+                      0,
+                    );
                     const isToday = date.toDateString() === new Date().toDateString();
 
                     return (
@@ -1769,19 +2084,14 @@ const Calendar: React.FC = () => {
                             {date.getDate()}
                           </Typography>
                           {(() => {
-                            // Calculate target TSS from planned workouts
-                            const targetTSS = dayWorkouts.reduce((sum, w) => sum + (w.target_tss || 0), 0);
-                            const completedTSS = dailyTSS;
-                            const displayTSS = completedTSS > 0 ? completedTSS : targetTSS;
-                            
-                            if (displayTSS > 0) {
-                              const tssColor = getTSSColor(displayTSS);
+                            if (performedTSS > 0) {
+                              const tssColor = getTSSColor(performedTSS);
                               return (
                                 <Chip
-                                  label={Math.round(displayTSS)}
+                                  label={Math.round(performedTSS)}
                                   size="small"
                                   sx={{
-                                    bgcolor: completedTSS > 0 ? tssColor.main : tssColor.main + '80',
+                                    bgcolor: tssColor.main,
                                     color: 'white',
                                     fontWeight: 600,
                                     height: 18,
@@ -1800,6 +2110,10 @@ const Calendar: React.FC = () => {
                           {dayWorkouts.map((workout) => (
                             <Box
                               key={`workout-${workout.id}`}
+                              draggable
+                              onDragStart={(e) => onWorkoutDragStart(e, workout)}
+                              onDragOver={onAllowDrop}
+                              onDrop={(e) => onDropOntoWorkout(e, workout)}
                               onClick={() => handleWorkoutClick(workout)}
                               sx={{
                                 fontSize: '0.75rem',
@@ -1811,7 +2125,7 @@ const Calendar: React.FC = () => {
                                 borderColor: getSportColor(workout.sport_type).main,
                                 bgcolor: workout.is_completed ? 'action.selected' : 'transparent',
                                 color: 'text.primary',
-                                cursor: 'pointer',
+                                cursor: 'grab',
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: 0.5,
@@ -1842,6 +2156,10 @@ const Calendar: React.FC = () => {
                           {dayActivities.map((activity) => (
                             <Box
                               key={`activity-${activity.id}`}
+                              draggable
+                              onDragStart={(e) => onActivityDragStart(e, activity)}
+                              onDragOver={onAllowDrop}
+                              onDrop={(e) => onDropOntoActivity(e, activity)}
                               onClick={() => handleActivityClick(activity)}
                               sx={{
                                 fontSize: '0.75rem',
@@ -1851,8 +2169,10 @@ const Calendar: React.FC = () => {
                                 bgcolor: 'action.selected',
                                 color: 'text.primary',
                                 border: 1.5,
-                                borderColor: getSportColor(activity.activity_type).main,
-                                cursor: 'pointer',
+                                borderColor: activity.match_needs_review
+                                  ? 'warning.main'
+                                  : getSportColor(activity.activity_type).main,
+                                cursor: 'grab',
                                 display: 'flex',
                                 alignItems: 'center',
                                 gap: 0.5,
@@ -1864,10 +2184,13 @@ const Calendar: React.FC = () => {
                               <Box sx={{ flexGrow: 1, minWidth: 0 }}>
                                 <Typography variant="caption" sx={{ fontSize: '0.7rem', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', display: 'block' }}>
                                   {activity.activity_name}
+                                  {activity.match_needs_review ? ' · ?' : ''}
                                 </Typography>
-                                {activity.distance_meters && (
-                                  <Typography variant="caption" sx={{ fontSize: '0.65rem', color: 'text.secondary' }}>
-                                    {(activity.distance_meters / 1000).toFixed(1)}km
+                                {(activity.distance_meters || activity.off_plan_day) && (
+                                  <Typography variant="caption" sx={{ fontSize: '0.65rem', color: activity.off_plan_day ? 'warning.main' : 'text.secondary' }}>
+                                    {activity.distance_meters ? `${(activity.distance_meters / 1000).toFixed(1)}km` : ''}
+                                    {activity.distance_meters && activity.off_plan_day ? ' · ' : ''}
+                                    {activity.off_plan_day ? `planned ${formatPlanDay(activity.matched_workout_date)}` : ''}
                                   </Typography>
                                 )}
                               </Box>
@@ -1880,25 +2203,29 @@ const Calendar: React.FC = () => {
 
                   {/* Weekly Summary Column */}
                   <Box sx={{ 
-                    width: '200px', 
+                    flex: '0 0 168px',
+                    width: 168,
                     bgcolor: 'action.hover',
                     borderLeft: 2,
                     borderColor: 'divider',
                     p: 1,
                     display: 'flex',
                     flexDirection: 'column',
-                    gap: 0.5
+                    gap: 0.5,
+                    minWidth: 0,
                   }}>
-                    <Typography variant="caption" color="text.secondary" fontWeight={600} sx={{ fontSize: '0.7rem', mb: 0.5 }}>
-                      {weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} - {weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
+                    <Typography variant="caption" color="text.secondary" fontWeight={600} noWrap sx={{ fontSize: '0.7rem' }}>
+                      {weekStart.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}–{weekEnd.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}
                     </Typography>
                     
-                    {/* TSS */}
-                    <Box sx={{ display: 'flex', alignItems: 'baseline', gap: 0.5, borderBottom: 1, borderColor: 'divider', pb: 0.5 }}>
-                      <Typography variant="h6" fontWeight={700} color="primary">
-                        {weekSummary.totalTSS}
+                    <Box sx={{ borderBottom: 1, borderColor: 'divider', pb: 0.5 }}>
+                      <Typography fontWeight={700} color="primary" noWrap sx={{ fontSize: '1rem', lineHeight: 1.2 }}>
+                        {weekSummary.achievedTSS}
+                        <Box component="span" sx={{ fontWeight: 500, color: 'text.secondary' }}> / {weekSummary.plannedTSS}</Box>
                       </Typography>
-                      <Typography variant="caption" color="text.secondary">TSS</Typography>
+                      <Typography variant="caption" color="text.secondary" noWrap sx={{ display: 'block', fontSize: '0.65rem' }}>
+                        TSS done / plan
+                      </Typography>
                     </Box>
                     
                     {/* Time + Distance combined */}
@@ -2088,6 +2415,14 @@ const Calendar: React.FC = () => {
               </Box>
             </DialogContent>
             <DialogActions>
+              <Button
+                color="error"
+                startIcon={<DeleteIcon />}
+                onClick={() => handleDeleteWorkout(selectedWorkout)}
+                sx={{ mr: 'auto' }}
+              >
+                Remove
+              </Button>
               <Button onClick={() => setDetailDialogOpen(false)}>Close</Button>
               <Button
                 variant="contained"

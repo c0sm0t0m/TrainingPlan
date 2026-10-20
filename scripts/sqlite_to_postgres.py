@@ -2,7 +2,7 @@
 """
 One-shot: copy data from a local SQLite DB into a running Postgres container.
 
-Assumes Postgres schema already exists (run alembic upgrade head first).
+Assumes Postgres schema already exists (run alembic upgrade head / init_db first).
 Uses docker exec + COPY so no extra Python DB drivers are required.
 
 Usage:
@@ -16,13 +16,14 @@ from __future__ import annotations
 import argparse
 import csv
 import io
+import json
+import math
 import sqlite3
 import subprocess
 import sys
 from pathlib import Path
 
 
-# Prefer this order when present (FK-friendly). Remaining tables appended alphabetically.
 PREFERRED_ORDER = [
     "users",
     "garmin_activities",
@@ -50,6 +51,37 @@ def psql(container: str, user: str, db: str, sql: str) -> None:
         raise SystemExit(f"psql failed ({result.returncode})")
 
 
+def psql_tuples(container: str, user: str, db: str, sql: str) -> list[tuple[str, ...]]:
+    result = run(
+        [
+            "docker",
+            "exec",
+            "-i",
+            container,
+            "psql",
+            "-U",
+            user,
+            "-d",
+            db,
+            "-v",
+            "ON_ERROR_STOP=1",
+            "-tAc",
+            sql,
+        ],
+        check=False,
+    )
+    if result.returncode != 0:
+        sys.stderr.write(result.stderr.decode("utf-8", errors="replace"))
+        raise SystemExit(f"psql query failed ({result.returncode})")
+    lines = result.stdout.decode("utf-8", errors="replace").strip().splitlines()
+    out: list[tuple[str, ...]] = []
+    for line in lines:
+        if not line.strip():
+            continue
+        out.append(tuple(line.split("|")))
+    return out
+
+
 def list_sqlite_tables(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name"
@@ -60,25 +92,107 @@ def list_sqlite_tables(conn: sqlite3.Connection) -> list[str]:
     return ordered
 
 
-def table_columns(conn: sqlite3.Connection, table: str) -> list[str]:
+def sqlite_columns(conn: sqlite3.Connection, table: str) -> list[str]:
     return [r[1] for r in conn.execute(f'PRAGMA table_info("{table}")').fetchall()]
+
+
+def pg_column_types(container: str, user: str, db: str, table: str) -> dict[str, str]:
+    rows = psql_tuples(
+        container,
+        user,
+        db,
+        "SELECT column_name, data_type FROM information_schema.columns "
+        f"WHERE table_schema='public' AND table_name='{table}' ORDER BY ordinal_position;",
+    )
+    return {name: dtype for name, dtype in rows}
+
+
+def coerce_value(value, pg_type: str | None):
+    if value is None:
+        return None
+
+    dtype = (pg_type or "").lower()
+
+    if dtype in {"integer", "bigint", "smallint"}:
+        if isinstance(value, bool):
+            return int(value)
+        if isinstance(value, int):
+            return value
+        if isinstance(value, float):
+            if math.isnan(value) or math.isinf(value):
+                return None
+            return int(round(value))
+        s = str(value).strip()
+        if s == "":
+            return None
+        try:
+            return int(round(float(s)))
+        except ValueError:
+            return None
+
+    if dtype in {"double precision", "real", "numeric"}:
+        if isinstance(value, (int, float)):
+            if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
+                return None
+            return float(value)
+        s = str(value).strip()
+        if s == "":
+            return None
+        try:
+            return float(s)
+        except ValueError:
+            return None
+
+    if dtype == "boolean":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        s = str(value).strip().lower()
+        if s in {"1", "true", "t", "yes", "y"}:
+            return True
+        if s in {"0", "false", "f", "no", "n"}:
+            return False
+        return None
+
+    if dtype in {"json", "jsonb"}:
+        if isinstance(value, (dict, list)):
+            return json.dumps(value)
+        if isinstance(value, (bytes, bytearray)):
+            return value.decode("utf-8", errors="replace")
+        s = str(value)
+        # Leave as-is if already JSON-looking; Postgres JSON accepts text
+        return s
+
+    if isinstance(value, bytes):
+        return value.decode("utf-8", errors="replace")
+
+    return value
 
 
 def csv_cell(value) -> str:
     if value is None:
         return r"\N"
+    if isinstance(value, bool):
+        return "true" if value else "false"
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return str(value)
 
 
-def export_csv(conn: sqlite3.Connection, table: str, columns: list[str]) -> tuple[str, int]:
+def export_csv(
+    conn: sqlite3.Connection,
+    table: str,
+    columns: list[str],
+    pg_types: dict[str, str],
+) -> tuple[str, int]:
     cols_sql = ", ".join(f'"{c}"' for c in columns)
     rows = conn.execute(f'SELECT {cols_sql} FROM "{table}"').fetchall()
     buf = io.StringIO()
     writer = csv.writer(buf, lineterminator="\n", quoting=csv.QUOTE_MINIMAL)
     for row in rows:
-        writer.writerow([csv_cell(v) for v in row])
+        coerced = [coerce_value(v, pg_types.get(col)) for col, v in zip(columns, row)]
+        writer.writerow([csv_cell(v) for v in coerced])
     return buf.getvalue(), len(rows)
 
 
@@ -91,7 +205,6 @@ def copy_table(
     csv_data: str,
 ) -> None:
     cols = ", ".join(f'"{c}"' for c in columns)
-    # \copy reads remaining stdin as CSV until EOF. Use \N for SQL NULL.
     copy_sql = f"\\copy \"{table}\" ({cols}) FROM STDIN WITH (FORMAT csv, NULL '\\N')\n"
     payload = copy_sql + csv_data
     result = run(
@@ -105,7 +218,6 @@ def copy_table(
 
 
 def reset_sequences(container: str, user: str, db: str, tables: list[str]) -> None:
-    # Best-effort: set sequence to MAX(id) for tables that have an id column.
     statements = []
     for table in tables:
         if table == "alembic_version":
@@ -156,7 +268,6 @@ def main() -> None:
     if not sqlite_path.is_file():
         raise SystemExit(f"SQLite file not found: {sqlite_path}")
 
-    # Ensure container is running
     probe = run(["docker", "inspect", "-f", "{{.State.Running}}", args.container], check=False)
     if probe.returncode != 0 or probe.stdout.decode().strip() != "true":
         raise SystemExit(
@@ -178,7 +289,20 @@ def main() -> None:
             if reply.strip() != "import":
                 raise SystemExit("Aborted.")
 
-        # Truncate and disable FK checks during load
+        # Only truncate tables that exist on both sides
+        pg_tables = {
+            r[0]
+            for r in psql_tuples(
+                args.container,
+                args.user,
+                args.db,
+                "SELECT tablename FROM pg_tables WHERE schemaname='public';",
+            )
+        }
+        tables = [t for t in tables if t in pg_tables]
+        if not tables:
+            raise SystemExit("No overlapping tables between SQLite and Postgres")
+
         truncate_list = ", ".join(f'"{t}"' for t in tables)
         psql(
             args.container,
@@ -188,8 +312,17 @@ def main() -> None:
         )
 
         for table in tables:
-            columns = table_columns(conn, table)
-            csv_data, count = export_csv(conn, table, columns)
+            pg_types = pg_column_types(args.container, args.user, args.db, table)
+            sq_cols = sqlite_columns(conn, table)
+            columns = [c for c in sq_cols if c in pg_types]
+            skipped = [c for c in sq_cols if c not in pg_types]
+            if skipped:
+                print(f"  - {table}: skipping SQLite-only columns: {', '.join(skipped)}")
+            if not columns:
+                print(f"  - {table}: no shared columns (skip)")
+                continue
+
+            csv_data, count = export_csv(conn, table, columns, pg_types)
             if count == 0:
                 print(f"  - {table}: 0 rows (skip)")
                 continue

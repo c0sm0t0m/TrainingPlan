@@ -340,7 +340,7 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
         sx={{
           flexGrow: 1,
           p: isMobile ? 2 : 3,
-          pb: isMobile ? 10 : 3, // Extra padding for bottom nav on mobile
+          pb: isMobile ? 'calc(80px + env(safe-area-inset-bottom))' : 3,
         }}
       >
         {children}
@@ -361,6 +361,9 @@ const Layout = ({ children }: { children: React.ReactNode }) => {
             borderColor: 'divider',
             bgcolor: 'background.paper',
             zIndex: 1000,
+            pb: 'env(safe-area-inset-bottom)',
+            height: 'auto',
+            minHeight: 56,
           }}
         >
           {navItems.map((item) => (

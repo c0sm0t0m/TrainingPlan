@@ -9,6 +9,7 @@ import {
   DirectionsRun as RunIcon,
   DirectionsBike as BikeIcon,
   Pool as SwimIcon,
+  SportsTennis as TennisIcon,
   FitnessCenter as StrengthIcon,
   CheckCircle as CheckCircleIcon,
   Cancel as CancelIcon,
@@ -25,6 +26,7 @@ interface Workout {
   tss?: number;
   duration_minutes?: number;
   is_completed: boolean;
+  matched_activity_id?: number | null;
 }
 
 interface GarminActivity {
@@ -51,6 +53,7 @@ const getSportIcon = (sportType: string) => {
   if (type.includes('run') || type === 'running') return <RunIcon fontSize="small" />;
   if (type.includes('bike') || type.includes('cycling')) return <BikeIcon fontSize="small" />;
   if (type.includes('swim')) return <SwimIcon fontSize="small" />;
+  if (type.includes('tennis')) return <TennisIcon fontSize="small" />;
   return <StrengthIcon fontSize="small" />;
 };
 
@@ -69,22 +72,12 @@ export default function MobileWeekGrid({
     const date = addDays(currentWeekStart, dayOffset);
     const dateStr = format(date, 'yyyy-MM-dd');
     
-    const dayWorkouts = workouts.filter(w => w.date === dateStr);
-    const dayActivities = activities.filter(a => a.date === dateStr);
+    const dayWorkouts = workouts.filter(w => w.date.slice(0, 10) === dateStr && !w.matched_activity_id);
+    const dayActivities = activities.filter(a => a.date.slice(0, 10) === dateStr);
     
-    // Calculate TSS: show completed TSS if available, otherwise show target TSS
-    const completedTSS = [
-      ...dayWorkouts.filter(w => w.is_completed).map(w => w.tss || 0),
-      ...dayActivities.map(a => a.calculated_tss || 0)
-    ].reduce((sum, tss) => sum + tss, 0);
-    
-    const targetTSS = dayWorkouts
-      .filter(w => !w.is_completed)
-      .reduce((sum, w) => sum + (w.target_tss || 0), 0);
-    
-    const totalTSS = completedTSS > 0 ? completedTSS : targetTSS;
-    
-    return { date, dateStr, workouts: dayWorkouts, activities: dayActivities, totalTSS, hasTarget: targetTSS > 0 && completedTSS === 0 };
+    const totalTSS = dayActivities.reduce((sum, a) => sum + (a.calculated_tss || 0), 0);
+
+    return { date, dateStr, workouts: dayWorkouts, activities: dayActivities, totalTSS, hasTarget: false };
   };
 
   return (

@@ -1,0 +1,16 @@
+__pycache__
+*.pyc
+.venv
+venv
+venv313
+.env
+.env.*
+uploads
+*.db
+*.sqlite
+*.sqlite3
+.pytest_cache
+.git
+.DS_Store
+celerybeat-schedule
+celerybeat-schedule.*

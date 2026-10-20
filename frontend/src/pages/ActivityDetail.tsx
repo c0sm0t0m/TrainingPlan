@@ -23,6 +23,8 @@ import {
   Skeleton,
   Alert,
   Chip,
+  Button,
+  CircularProgress,
   useTheme,
   useMediaQuery,
 } from '@mui/material';
@@ -39,10 +41,16 @@ import {
   Terrain as TerrainIcon,
   LocalFireDepartment as CaloriesIcon,
   Speed as SpeedIcon,
+  LinkOff as LinkOffIcon,
+  Check as CheckIcon,
 } from '@mui/icons-material';
 import { format } from 'date-fns';
 import api from '../services/api';
 import ActivityMap from '../components/activity/ActivityMap';
+import ActivityCharts from '../components/activity/ActivityCharts';
+import ActivitySplits from '../components/activity/ActivitySplits';
+import ActivityIgShareDialog from '../components/activity/ActivityIgShareDialog';
+import { isCyclingSport } from '../utils/sportTypes';
 
 // Types
 interface Activity {
@@ -69,6 +77,29 @@ interface Activity {
   average_cadence?: number;
   location_name?: string;
   has_polyline: boolean;
+  matched_workout?: {
+    id: number;
+    training_plan_id: number;
+    title: string;
+    date: string;
+    sport_type: string;
+    duration_minutes?: number;
+    distance_km?: number;
+    target_tss?: number;
+    intensity_zone?: string;
+    match_confidence?: number;
+    match_status?: string;
+    match_needs_review: boolean;
+    performed_on_planned_day?: boolean;
+    actual_date?: string | null;
+    comparison?: {
+      label: string;
+      planned?: string | null;
+      actual?: string | null;
+      delta?: string | null;
+      tone?: string;
+    }[];
+  } | null;
 }
 
 interface TrackPoint {
@@ -85,6 +116,123 @@ interface ActivityTrack {
   has_elevation: boolean;
 }
 
+type MatchedWorkout = NonNullable<Activity['matched_workout']>;
+
+function formatDayLabel(iso?: string | null): string {
+  if (!iso) return '';
+  const [year, month, day] = iso.slice(0, 10).split('-').map(Number);
+  if (!year || !month || !day) return iso;
+  return format(new Date(year, month - 1, day), 'EEE, MMM d');
+}
+
+function PlanVsActual({
+  workout,
+  linkBusy,
+  onConfirm,
+  onUnlink,
+}: {
+  workout: MatchedWorkout;
+  linkBusy: boolean;
+  onConfirm: () => void;
+  onUnlink: () => void;
+}) {
+  const theme = useTheme();
+  const rows = workout.comparison || [];
+  const offPlan = workout.performed_on_planned_day === false;
+  const toneColor = (tone?: string) => {
+    if (tone === 'high') return theme.palette.error.main;
+    if (tone === 'low') return theme.palette.info.main;
+    if (tone === 'ok') return theme.palette.success.main;
+    return theme.palette.text.secondary;
+  };
+
+  return (
+    <Box
+      sx={{
+        mb: 3,
+        border: 1,
+        borderColor: 'divider',
+        borderRadius: 1,
+        px: 2,
+        py: 1.5,
+      }}
+    >
+      <Box sx={{ display: 'flex', justifyContent: 'space-between', gap: 1, alignItems: 'flex-start' }}>
+        <Box sx={{ minWidth: 0 }}>
+          <Typography variant="caption" color="text.secondary" sx={{ letterSpacing: 0.4 }}>
+            Suggested vs actual
+          </Typography>
+          <Typography variant="subtitle1" fontWeight={600}>
+            {workout.title}
+          </Typography>
+          {offPlan && (
+            <Typography variant="body2" color="warning.main">
+              Not done on the suggested day · planned {formatDayLabel(workout.date)} · done {formatDayLabel(workout.actual_date)}
+            </Typography>
+          )}
+          {workout.match_needs_review && (
+            <Typography variant="body2" color="text.secondary">
+              Possible match
+              {workout.match_confidence != null
+                ? ` · ${Math.round(workout.match_confidence * 100)}%`
+                : ''}
+            </Typography>
+          )}
+        </Box>
+        <Box sx={{ display: 'flex', gap: 1, flexShrink: 0 }}>
+          {workout.match_needs_review && (
+            <Button
+              size="small"
+              startIcon={linkBusy ? <CircularProgress size={14} /> : <CheckIcon />}
+              disabled={linkBusy}
+              onClick={onConfirm}
+            >
+              Confirm
+            </Button>
+          )}
+          <Button
+            size="small"
+            color="inherit"
+            startIcon={linkBusy ? <CircularProgress size={14} /> : <LinkOffIcon />}
+            disabled={linkBusy}
+            onClick={onUnlink}
+          >
+            Unlink
+          </Button>
+        </Box>
+      </Box>
+
+      {rows.length > 0 && (
+        <Box
+          sx={{
+            mt: 1.5,
+            display: 'grid',
+            gridTemplateColumns: 'minmax(72px, 0.9fr) minmax(72px, 1fr) minmax(72px, 1fr) auto',
+            columnGap: 1.5,
+            rowGap: 0.75,
+            alignItems: 'baseline',
+          }}
+        >
+          <span />
+          <Typography variant="caption" color="text.secondary">Suggested</Typography>
+          <Typography variant="caption" color="text.secondary">Actual</Typography>
+          <span />
+          {rows.map((row) => (
+            <React.Fragment key={row.label}>
+              <Typography variant="body2" color="text.secondary">{row.label}</Typography>
+              <Typography variant="body2">{row.planned || '—'}</Typography>
+              <Typography variant="body2" fontWeight={600}>{row.actual || '—'}</Typography>
+              <Typography variant="body2" sx={{ color: toneColor(row.tone), whiteSpace: 'nowrap' }}>
+                {row.delta || ''}
+              </Typography>
+            </React.Fragment>
+          ))}
+        </Box>
+      )}
+    </Box>
+  );
+}
+
 const ActivityDetail: React.FC = () => {
   const { activityId } = useParams<{ activityId: string }>();
   const navigate = useNavigate();
@@ -96,6 +244,9 @@ const ActivityDetail: React.FC = () => {
   const [trackData, setTrackData] = useState<ActivityTrack | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [linkBusy, setLinkBusy] = useState(false);
+  const [igShareOpen, setIgShareOpen] = useState(false);
+  const [trackLoading, setTrackLoading] = useState(false);
 
   useEffect(() => {
     if (!activityId) return;
@@ -111,14 +262,21 @@ const ActivityDetail: React.FC = () => {
       const response = await api.get(`/activities/${activityId}`);
       setActivity(response.data);
 
-      // Fetch GPS track if available
+      // Fetch GPS track if available (may lazy-download FIT — can take a few seconds)
       if (response.data.has_polyline) {
         try {
-          const trackResponse = await api.get(`/activities/${activityId}/track`);
+          setTrackLoading(true);
+          const trackResponse = await api.get(`/activities/${activityId}/track`, {
+            timeout: 120000,
+          });
           setTrackData(trackResponse.data);
         } catch (err) {
           console.warn('Failed to load GPS track:', err);
+        } finally {
+          setTrackLoading(false);
         }
+      } else {
+        setTrackData(null);
       }
     } catch (err: any) {
       setError(err.response?.data?.detail || 'Failed to load activity');
@@ -146,6 +304,11 @@ const ActivityDetail: React.FC = () => {
     return `${min}:${String(sec).padStart(2, '0')} /km`;
   };
 
+  const formatSpeedKmh = (speedMps?: number): string => {
+    if (!speedMps || speedMps === 0) return '--';
+    return `${(speedMps * 3.6).toFixed(1)} km/h`;
+  };
+
   const formatDistance = (meters?: number): string => {
     if (!meters) return '--';
     return (meters / 1000).toFixed(2);
@@ -153,8 +316,8 @@ const ActivityDetail: React.FC = () => {
 
   const getSportIcon = (activityType: string) => {
     const type = activityType.toLowerCase();
+    if (isCyclingSport(activityType)) return <BikeIcon />;
     if (type.includes('run')) return <RunIcon />;
-    if (type.includes('bike') || type.includes('cycl')) return <BikeIcon />;
     if (type.includes('swim')) return <SwimIcon />;
     if (type.includes('strength') || type.includes('gym')) return <StrengthIcon />;
     return <RunIcon />;
@@ -204,21 +367,36 @@ const ActivityDetail: React.FC = () => {
     console.log('Edit activity:', activityId);
   };
 
-  const handleShare = async () => {
-    if (navigator.share) {
-      try {
-        await navigator.share({
-          title: activity?.activity_name || 'Activity',
-          text: `Check out my ${activity?.activity_type}`,
-          url: window.location.href,
-        });
-      } catch (err) {
-        console.log('Share cancelled or failed:', err);
-      }
-    } else {
-      // Fallback: Copy link
-      navigator.clipboard.writeText(window.location.href);
-      alert('Link copied to clipboard!');
+  const handleShare = () => {
+    setIgShareOpen(true);
+  };
+
+  const handleUnlink = async () => {
+    if (!activityId || !activity?.matched_workout) return;
+    if (!confirm('Unlink this activity from the planned workout? The plan will show on the calendar again.')) {
+      return;
+    }
+    try {
+      setLinkBusy(true);
+      const response = await api.post(`/activities/${activityId}/unlink-workout`);
+      setActivity(response.data);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to unlink');
+    } finally {
+      setLinkBusy(false);
+    }
+  };
+
+  const handleConfirmMatch = async () => {
+    if (!activityId) return;
+    try {
+      setLinkBusy(true);
+      const response = await api.post(`/activities/${activityId}/confirm-match`);
+      setActivity(response.data);
+    } catch (err: any) {
+      setError(err.response?.data?.detail || 'Failed to confirm match');
+    } finally {
+      setLinkBusy(false);
     }
   };
 
@@ -313,13 +491,13 @@ const ActivityDetail: React.FC = () => {
               </Typography>
             </Box>
             <Box>
+              <IconButton onClick={handleShare} aria-label="Share for Instagram" title="Share for Instagram">
+                <ShareIcon />
+              </IconButton>
               {!isMobile && (
                 <>
                   <IconButton onClick={handleEdit}>
                     <EditIcon />
-                  </IconButton>
-                  <IconButton onClick={handleShare}>
-                    <ShareIcon />
                   </IconButton>
                   <IconButton>
                     <MoreVertIcon />
@@ -328,6 +506,15 @@ const ActivityDetail: React.FC = () => {
               )}
             </Box>
           </Box>
+
+          {activity.matched_workout && (
+            <PlanVsActual
+              workout={activity.matched_workout}
+              linkBusy={linkBusy}
+              onConfirm={handleConfirmMatch}
+              onUnlink={handleUnlink}
+            />
+          )}
 
           {/* Key Metrics Grid */}
           <Grid container spacing={3}>
@@ -357,10 +544,12 @@ const ActivityDetail: React.FC = () => {
               <Grid item xs={6} sm={3}>
                 <Box sx={{ textAlign: 'center' }}>
                   <Typography variant={isMobile ? 'h5' : 'h3'} fontWeight={700} color="primary">
-                    {formatPace(activity.average_speed_mps)}
+                    {isCyclingSport(activity.activity_type)
+                      ? formatSpeedKmh(activity.average_speed_mps)
+                      : formatPace(activity.average_speed_mps)}
                   </Typography>
                   <Typography variant="caption" color="text.secondary">
-                    avg pace
+                    {isCyclingSport(activity.activity_type) ? 'avg speed' : 'avg pace'}
                   </Typography>
                 </Box>
               </Grid>
@@ -395,8 +584,10 @@ const ActivityDetail: React.FC = () => {
 
       {/* Main Content Grid */}
       <Grid container spacing={3}>
-        {/* Left Column - Map & Charts (Placeholder) */}
+        {/* Left Column — charts first (power/pace), then map */}
         <Grid item xs={12} md={8}>
+          <ActivityCharts activityId={activity.id} activityType={activity.activity_type} />
+
           {/* Map Card */}
           {activity.has_polyline && trackData && trackData.total_points > 0 ? (
             <Card sx={{ mb: 3 }}>
@@ -415,34 +606,20 @@ const ActivityDetail: React.FC = () => {
             <Card sx={{ mb: 3 }}>
               <CardContent>
                 <Typography variant="body2" color="text.secondary" align="center">
-                  No GPS data available for this activity
+                  {trackLoading
+                    ? 'Loading GPS track…'
+                    : activity.has_polyline
+                      ? 'GPS track not available yet (open again after Garmin FIT sync)'
+                      : 'No GPS data available for this activity'}
                 </Typography>
+                {trackLoading && (
+                  <Box sx={{ display: 'flex', justifyContent: 'center', mt: 2 }}>
+                    <CircularProgress size={28} />
+                  </Box>
+                )}
               </CardContent>
             </Card>
           )}
-
-          {/* Charts Card (Placeholder) */}
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Activity Charts
-              </Typography>
-              <Box
-                sx={{
-                  height: 300,
-                  bgcolor: 'grey.100',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  borderRadius: 1,
-                }}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  Charts will be here (HR, Pace, Power, Elevation)
-                </Typography>
-              </Box>
-            </CardContent>
-          </Card>
         </Grid>
 
         {/* Right Column - Stats & Splits */}
@@ -520,7 +697,8 @@ const ActivityDetail: React.FC = () => {
                       <SpeedIcon sx={{ color: 'info.main', fontSize: 20 }} />
                       <Box>
                         <Typography variant="body2" fontWeight={600}>
-                          {Math.round(activity.average_cadence)} spm
+                          {Math.round(activity.average_cadence)}{' '}
+                          {isCyclingSport(activity.activity_type) ? 'rpm' : 'spm'}
                         </Typography>
                         <Typography variant="caption" color="text.secondary">
                           Cadence
@@ -544,32 +722,50 @@ const ActivityDetail: React.FC = () => {
                     </Box>
                   </Grid>
                 )}
+                {activity.average_power_watts && (
+                  <Grid item xs={6}>
+                    <Box sx={{ display: 'flex', alignItems: 'center', gap: 1 }}>
+                      <SpeedIcon sx={{ color: 'warning.dark', fontSize: 20 }} />
+                      <Box>
+                        <Typography variant="body2" fontWeight={600}>
+                          {Math.round(activity.average_power_watts)} W
+                        </Typography>
+                        <Typography variant="caption" color="text.secondary">
+                          Avg power
+                        </Typography>
+                      </Box>
+                    </Box>
+                  </Grid>
+                )}
               </Grid>
             </CardContent>
           </Card>
 
-          {/* Splits Card (Placeholder) */}
-          <Card>
-            <CardContent>
-              <Typography variant="h6" gutterBottom>
-                Lap Splits
-              </Typography>
-              <Box
-                sx={{
-                  minHeight: 200,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                <Typography variant="body2" color="text.secondary">
-                  Splits will be here
-                </Typography>
-              </Box>
-            </CardContent>
-          </Card>
+          <ActivitySplits activityId={activity.id} activityType={activity.activity_type} />
         </Grid>
       </Grid>
+
+      <ActivityIgShareDialog
+        open={igShareOpen}
+        onClose={() => setIgShareOpen(false)}
+        activityName={activity.activity_name}
+        activityType={activity.activity_type}
+        startTimeLocal={activity.start_time_local}
+        durationSeconds={activity.duration_seconds}
+        distanceMeters={activity.distance_meters}
+        calculatedTss={activity.calculated_tss}
+        trackPoints={trackData?.track_points}
+        matchedWorkout={
+          activity.matched_workout
+            ? {
+                title: activity.matched_workout.title,
+                duration_minutes: activity.matched_workout.duration_minutes,
+                distance_km: activity.matched_workout.distance_km,
+                target_tss: activity.matched_workout.target_tss,
+              }
+            : null
+        }
+      />
     </Container>
   );
 };

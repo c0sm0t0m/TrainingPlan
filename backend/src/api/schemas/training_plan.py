@@ -98,6 +98,10 @@ class Workout(WorkoutBase):
     notes: Optional[str] = None
     structured_workout_json: Optional[str] = None
     icu_sync_status: Optional[str] = None
+    matched_activity_id: Optional[int] = None
+    match_confidence: Optional[float] = None
+    match_status: Optional[str] = None
+    matched_at: Optional[datetime] = None
     created_at: datetime
     updated_at: datetime
 

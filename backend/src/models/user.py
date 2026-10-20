@@ -2,7 +2,7 @@
 User database model
 """
 from datetime import datetime
-from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text
+from sqlalchemy import Column, Integer, String, Boolean, DateTime, Text, Float
 from sqlalchemy.orm import relationship
 from src.database import Base
 
@@ -38,6 +38,9 @@ class User(Base):
     # null = use built-in starter defaults; "[]" = none; '["id",...]' = selection
     workout_library_enabled_ids = Column(Text, nullable=True)
     
+    # Athlete body mass (for W/kg on bike analysis)
+    weight_kg = Column(Float, nullable=True)
+
     # Training Thresholds & Zones
     # Cycling
     ftp = Column(Integer, nullable=True)  # Functional Threshold Power (watts)
